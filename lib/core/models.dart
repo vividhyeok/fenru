@@ -44,6 +44,8 @@ class WorkspaceObject {
       'course',
       'task',
       'resource',
+      'chat',
+      'message',
     };
     if (!kinds.contains(j['kind']) ||
         j['revision'] is! int ||

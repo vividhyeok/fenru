@@ -11,6 +11,8 @@ import '../core/models.dart';
 import '../core/workspace.dart';
 import '../features/backup/backup_service.dart';
 import '../features/reader/reader.dart';
+import '../features/ai/chat.dart';
+import '../features/ai/settings.dart';
 import '../integrations/canvas.dart';
 import '../integrations/credentials.dart';
 import 'dialogs.dart';
@@ -33,7 +35,7 @@ class _FenruShellState extends State<FenruShell> {
   final searchController = TextEditingController();
   final selected = <String>{};
   List<WorkspaceObject>? results;
-  static const labels = ['홈', '라이브러리', '과목', '노트', '플래너', '설정'];
+  static const labels = ['홈', '라이브러리', '과목', '노트', '플래너', '설정', 'AI'];
   static const icons = [
     Icons.home_outlined,
     Icons.folder_outlined,
@@ -41,6 +43,7 @@ class _FenruShellState extends State<FenruShell> {
     Icons.edit_note,
     Icons.calendar_month_outlined,
     Icons.settings_outlined,
+    Icons.auto_awesome_outlined,
   ];
   @override
   void dispose() {
@@ -132,6 +135,23 @@ class _FenruShellState extends State<FenruShell> {
           builder: (_) => NoteEditor(workspace: w, note: o),
         ),
       );
+    } else if (o.kind == 'message' || o.kind == 'chat') {
+      openAI(sessionId: o.kind == 'chat' ? o.id : o.text('sessionId'));
+    } else if (o.kind == 'task') {
+      setState(() {
+        tab = 4;
+        query = '';
+        results = null;
+        searchController.clear();
+      });
+    } else if (o.kind == 'course') {
+      setState(() {
+        tab = 1;
+        folder = o.title;
+        query = '';
+        results = null;
+        searchController.clear();
+      });
     } else if (o.kind == 'annotation') {
       final doc = w.byId(o.text('documentId'));
       if (doc != null && !doc.deleted) {
@@ -147,6 +167,33 @@ class _FenruShellState extends State<FenruShell> {
         );
       }
     }
+  }
+
+  void openAI({String? sessionId}) {
+    Navigator.push(
+      context,
+      MaterialPageRoute<void>(
+        builder: (_) => AIChat(
+          workspace: w,
+          sessionId: sessionId,
+          onCitation: (id, page) {
+            final doc = w.byId(id);
+            if (doc != null && !doc.deleted) {
+              openObject(
+                WorkspaceObject(
+                  id: doc.id,
+                  kind: doc.kind,
+                  data: {...doc.data, 'page': page},
+                  revision: doc.revision,
+                  device: doc.device,
+                  updated: doc.updated,
+                ),
+              );
+            }
+          },
+        ),
+      ),
+    );
   }
 
   Future<void> createNote({String? documentId}) async {
@@ -823,13 +870,21 @@ class _FenruShellState extends State<FenruShell> {
       ),
       if (w.preferences.containsKey('canvasLastSync'))
         Text('마지막 가져오기: ${w.preferences['canvasLastSync']}'),
+      ListTile(
+        contentPadding: EdgeInsets.zero,
+        leading: const Icon(Icons.key_outlined),
+        title: const Text('AI API 키 · 모델 설정'),
+        subtitle: const Text('OpenAI / DeepSeek · 키 입력, 연결 확인, 모델 및 토큰 한도'),
+        onTap: () => Navigator.push(
+          context,
+          MaterialPageRoute<void>(builder: (_) => AISettings(workspace: w)),
+        ),
+      ),
       const ListTile(
         contentPadding: EdgeInsets.zero,
-        leading: Icon(Icons.info_outline),
-        title: Text('AI · Google Drive'),
-        subtitle: Text(
-          '개발 중입니다. 이 버전은 AI 호출 및 자동 클라우드 동기화를 제공하지 않습니다.\n기기 간 이동은 ZIP 백업과 병합 복원을 이용하세요.',
-        ),
+        leading: Icon(Icons.cloud_outlined),
+        title: Text('Google Drive'),
+        subtitle: Text('자동 동기화는 개발 중입니다. 기기 간 이동은 ZIP 백업과 병합 복원을 이용하세요.'),
       ),
       const Divider(height: 32),
       Text('데이터와 백업', style: Theme.of(context).textTheme.titleMedium),
@@ -918,6 +973,11 @@ class _FenruShellState extends State<FenruShell> {
             ],
           ),
           actions: [
+            IconButton(
+              tooltip: 'AI 학습 대화',
+              onPressed: () => openAI(),
+              icon: const Icon(Icons.auto_awesome_outlined),
+            ),
             IconButton(
               tooltip: '도움말',
               onPressed: help,
@@ -1038,6 +1098,7 @@ class _FenruShellState extends State<FenruShell> {
                                 ],
                               ),
                               4 => planner(),
+                              6 => AIChat(workspace: w, embedded: true),
                               _ => settings(),
                             },
                     ),

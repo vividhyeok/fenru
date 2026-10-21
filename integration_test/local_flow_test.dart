@@ -53,7 +53,11 @@ void main() {
       await controller.textSelectionDelegate.getSelectedText(),
       contains('Fenru learning workspace'),
     );
-    await controller.textSelectionDelegate.clearTextSelection();
+    await tester.tap(find.byType(PopupMenuButton<String>).first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('선택 영역 하이라이트'));
+    await tester.pumpAndSettle();
+    expect(w.ofKind('annotation').single.text('type'), 'highlight');
     await tester.tap(find.byTooltip('책갈피 추가'));
     await tester.pumpAndSettle();
     expect(
@@ -61,9 +65,9 @@ void main() {
           .ofKind('annotation')
           .where((a) => a.text('documentId') == doc.id)
           .length,
-      1,
+      2,
     );
-    await tester.pageBack();
+    await tester.tap(find.byType(BackButton).first);
     await tester.pumpAndSettle();
     await tester.pumpWidget(const SizedBox());
     await w.close();
@@ -72,7 +76,17 @@ void main() {
       WorkspaceDatabase(File('${root.path}/workspace.sqlite')),
     );
     await reopened.initialize();
-    expect(reopened.ofKind('annotation').single.number('page'), 1);
+    expect(reopened.ofKind('annotation').length, 2);
+    expect(
+      reopened
+          .ofKind('annotation')
+          .any(
+            (a) =>
+                a.text('type') == 'highlight' &&
+                (a.data['rectangles'] as List).isNotEmpty,
+          ),
+      isTrue,
+    );
     expect(reopened.ofKind('document').single.id, doc.id);
     await reopened.close();
     await root.delete(recursive: true);

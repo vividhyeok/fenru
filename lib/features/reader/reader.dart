@@ -9,6 +9,7 @@ import 'package:pdfrx/pdfrx.dart';
 import '../../core/models.dart';
 import '../../core/workspace.dart';
 import '../../ui/dialogs.dart';
+import '../ai/chat.dart';
 
 class DocumentReader extends StatefulWidget {
   const DocumentReader({
@@ -27,8 +28,9 @@ class _DocumentReaderState extends State<DocumentReader> {
   late int page = widget.document.number('page', 1);
   Timer? pageTimer;
   bool panel = true;
+  bool showAI = false;
   String? error;
-  late final searcher = PdfTextSearcher(controller);
+  PdfTextSearcher? searcher;
   @override
   void initState() {
     super.initState();
@@ -43,7 +45,10 @@ class _DocumentReaderState extends State<DocumentReader> {
     PdfTextSelectionDelegate selection,
     String type,
   ) async {
-    if (!selection.isCopyAllowed || !selection.hasSelectedText) return;
+    if (!selection.isCopyAllowed || !selection.hasSelectedText) {
+      setState(() => error = '먼저 PDF의 텍스트를 선택하세요. 스캔 문서는 OCR이 필요할 수 있습니다.');
+      return;
+    }
     await safely(() async {
       final ranges = await selection.getSelectedTextRanges();
       for (final range in ranges) {
@@ -121,7 +126,7 @@ class _DocumentReaderState extends State<DocumentReader> {
   @override
   void dispose() {
     widget.workspace.removeListener(refreshMarks);
-    searcher.dispose();
+    searcher?.dispose();
     if (pageTimer?.isActive == true) {
       widget.workspace.recordPage(widget.document, page).catchError((_) {});
     }
@@ -144,6 +149,48 @@ class _DocumentReaderState extends State<DocumentReader> {
       });
     });
   }
+
+  Future<DocumentContext?> documentContext() async {
+    if (!controller.isReady ||
+        !controller.textSelectionDelegate.isCopyAllowed) {
+      return null;
+    }
+    final selected = controller.textSelectionDelegate;
+    final ranges = selected.hasSelectedText
+        ? await selected.getSelectedTextRanges()
+        : <PdfPageTextRange>[];
+    if (ranges.map((r) => r.pageNumber).toSet().length > 1) {
+      throw const UserFacingException('정확한 출처를 위해 한 페이지 안의 텍스트를 선택해 주세요.');
+    }
+    final selection = selected.hasSelectedText
+        ? await selected.getSelectedText()
+        : '';
+    final text = selection.isNotEmpty
+        ? selection
+        : (await controller.document.pages[page - 1].loadText())?.fullText ??
+              '';
+    return DocumentContext(
+      documentId: widget.document.id,
+      title: widget.document.title,
+      page: ranges.isNotEmpty ? ranges.first.pageNumber : page,
+      text: text,
+      versionHash: widget.document.text('hash'),
+    );
+  }
+
+  Widget chat({bool embedded = false}) => AIChat(
+    workspace: widget.workspace,
+    documentId: widget.document.id,
+    contextBuilder: documentContext,
+    requestDocument: true,
+    embedded: embedded,
+    onCitation: (id, targetPage) {
+      if (id == widget.document.id && controller.isReady) {
+        if (!embedded) Navigator.pop(context);
+        controller.goToPage(pageNumber: targetPage);
+      }
+    },
+  );
 
   Widget annotations() => ListenableBuilder(
     listenable: widget.workspace,
@@ -276,7 +323,14 @@ class _DocumentReaderState extends State<DocumentReader> {
               icon: const Icon(Icons.view_sidebar_outlined),
               onPressed: () {
                 if (wide) {
-                  setState(() => panel = !panel);
+                  setState(() {
+                    if (showAI) {
+                      showAI = false;
+                      panel = true;
+                    } else {
+                      panel = !panel;
+                    }
+                  });
                 } else {
                   showModalBottomSheet<void>(
                     context: context,
@@ -297,13 +351,29 @@ class _DocumentReaderState extends State<DocumentReader> {
                 if (result.type != ResultType.done && mounted) {
                   setState(() => error = '이 형식을 열 수 있는 외부 앱을 설치하세요.');
                 }
+              } else if (value == 'ai') {
+                if (wide) {
+                  setState(() {
+                    panel = true;
+                    showAI = true;
+                  });
+                } else {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute<void>(builder: (_) => chat()),
+                  );
+                }
+              } else if (value == 'highlight' || value == 'underline') {
+                if (controller.isReady) {
+                  await highlight(controller.textSelectionDelegate, value);
+                }
               } else if (value == 'search') {
                 final text = await askText(context, 'PDF 본문 검색');
                 if (text != null && text.isNotEmpty) {
-                  searcher.startTextSearch(text);
+                  searcher?.startTextSearch(text);
                 }
               } else if (value == 'nextMatch') {
-                await searcher.goToNextMatch();
+                await searcher?.goToNextMatch();
               } else if (controller.isReady) {
                 controller.goTo(
                   controller.calcMatrixFitWidthForPage(pageNumber: page),
@@ -311,6 +381,17 @@ class _DocumentReaderState extends State<DocumentReader> {
               }
             },
             itemBuilder: (_) => [
+              if (pdf) const PopupMenuItem(value: 'ai', child: Text('AI에게 질문')),
+              if (pdf)
+                const PopupMenuItem(
+                  value: 'highlight',
+                  child: Text('선택 영역 하이라이트'),
+                ),
+              if (pdf)
+                const PopupMenuItem(
+                  value: 'underline',
+                  child: Text('선택 영역 밑줄'),
+                ),
               if (pdf)
                 const PopupMenuItem(value: 'search', child: Text('PDF 본문 검색')),
               if (pdf)
@@ -347,9 +428,17 @@ class _DocumentReaderState extends State<DocumentReader> {
                           controller: controller,
                           initialPageNumber: page,
                           params: PdfViewerParams(
+                            onViewerReady: (_, _) {
+                              if (searcher == null) {
+                                setState(
+                                  () => searcher = PdfTextSearcher(controller),
+                                );
+                              }
+                            },
                             pagePaintCallbacks: [
                               paintMarks,
-                              searcher.pageTextMatchPaintCallback,
+                              if (searcher != null)
+                                searcher!.pageTextMatchPaintCallback,
                             ],
                             customizeContextMenuItems: (params, items) {
                               final selection = params.textSelectionDelegate;
@@ -397,7 +486,10 @@ class _DocumentReaderState extends State<DocumentReader> {
                 ),
                 if (pdf && wide && panel) ...[
                   const VerticalDivider(width: 1),
-                  SizedBox(width: 290, child: annotations()),
+                  SizedBox(
+                    width: showAI ? 360 : 290,
+                    child: showAI ? chat(embedded: true) : annotations(),
+                  ),
                 ],
               ],
             ),
