@@ -718,12 +718,41 @@ class _FenruShellState extends State<FenruShell> {
       ),
     );
     if (chosen == null) return;
+    final summaries = <String>[];
     for (final course in chosen) {
-      await provider.importCourse(w, course, (message) {
+      final report = await provider.importCourse(w, course, (message) {
         if (mounted) setState(() => status = message);
       });
+      summaries.add('${course['name'] ?? course['id']}\n${report.summary}');
+      summaries.addAll(report.warnings);
+      if (report.imported == 0 && report.unchanged == 0) {
+        summaries.add(
+          '내려받을 공개 파일이 발견되지 않았습니다. 학교 강의실의 주차별 학습 자료가 외부 도구(LTI)로 제공되는 경우 현재 Canvas 파일 API로 가져올 수 없습니다.',
+        );
+      }
     }
     await w.setPreference('canvasLastSync', DateTime.now().toIso8601String());
+    await w.setPreference('canvasImportSummary', summaries.join('\n\n'));
+    if (mounted) {
+      await showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Canvas 가져오기 결과'),
+          content: SizedBox(
+            width: 560,
+            child: SingleChildScrollView(
+              child: SelectableText(summaries.join('\n\n')),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('확인'),
+            ),
+          ],
+        ),
+      );
+    }
   }, label: 'Canvas 과목을 확인하고 있습니다…');
   Widget courses() {
     final items = w.ofKind('course');
@@ -875,6 +904,11 @@ class _FenruShellState extends State<FenruShell> {
       ),
       if (w.preferences.containsKey('canvasLastSync'))
         Text('마지막 가져오기: ${w.preferences['canvasLastSync']}'),
+      if (w.preferences.containsKey('canvasImportSummary'))
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          child: SelectableText(w.preferences['canvasImportSummary']!),
+        ),
       ListTile(
         contentPadding: EdgeInsets.zero,
         leading: const Icon(Icons.key_outlined),
@@ -942,7 +976,7 @@ class _FenruShellState extends State<FenruShell> {
       ),
       const SizedBox(height: 20),
       const Text(
-        'Fenru 0.1.0-alpha.2 · 개발 프리릴리스\n로컬 데이터는 자동 저장됩니다. 별도 계정이나 추적 SDK를 사용하지 않습니다.',
+        'Fenru 0.1.0-alpha.3 · 개발 프리릴리스\n로컬 데이터는 자동 저장됩니다. 별도 계정이나 추적 SDK를 사용하지 않습니다.',
       ),
     ],
   );

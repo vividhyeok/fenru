@@ -5,8 +5,208 @@ import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:fenru/integrations/canvas.dart';
+import 'package:fenru/core/database.dart';
+import 'package:fenru/core/workspace.dart';
 
 void main() {
+  test('module download rejects a successful HTTP login page', () async {
+    final root = await Directory.systemTemp.createTemp('fenru-login-test-');
+    final dio = Dio()
+      ..httpClientAdapter = _Adapter(
+        (r) => ResponseBody.fromString(
+          '<!DOCTYPE html><html>Sign in</html>',
+          200,
+          headers: {
+            'content-type': ['text/html'],
+          },
+        ),
+      );
+    try {
+      await expectLater(
+        CanvasProvider('https://school.edu', 'test', client: dio).downloadFile(
+          Uri.parse('https://school.edu/download'),
+          '${root.path}/file',
+        ),
+        throwsA(
+          isA<CanvasRequestException>().having(
+            (e) => e.restricted,
+            'login page rejected',
+            isTrue,
+          ),
+        ),
+      );
+    } finally {
+      await root.delete(recursive: true);
+    }
+  });
+  for (final fileListStatus in [200, 401]) {
+    test(
+      'module files survive list status $fileListStatus and restricted items',
+      () async {
+        final root = await Directory.systemTemp.createTemp(
+          'fenru-module-test-',
+        );
+        final workspace = Workspace(root, WorkspaceDatabase.memory());
+        await workspace.initialize();
+        final requested = <String>[];
+        ResponseBody json(Object body, [int status = 200]) =>
+            ResponseBody.fromString(
+              jsonEncode(body),
+              status,
+              headers: {
+                'content-type': ['application/json'],
+              },
+            );
+        final dio = Dio()
+          ..httpClientAdapter = _Adapter((r) {
+            requested.add(r.uri.toString());
+            switch (r.uri.path) {
+              case '/api/v1/courses':
+                return json([
+                  {'id': 1, 'name': 'Example course'},
+                ]);
+              case '/api/v1/courses/1/files':
+                return json([], fileListStatus);
+              case '/api/v1/courses/1/modules':
+                return json([
+                  {'id': 10, 'name': 'Week 1'},
+                ]);
+              case '/api/v1/courses/1/modules/10/items':
+                if (r.uri.queryParameters['page'] == '2') {
+                  return json([
+                    {
+                      'type': 'File',
+                      'content_id': 22,
+                      'title': 'Restricted.pdf',
+                    },
+                    {
+                      'type': 'File',
+                      'content_id': 23,
+                      'title': 'Posted lecture',
+                    },
+                  ]);
+                }
+                return ResponseBody.fromString(
+                  jsonEncode([
+                    {'type': 'File', 'content_id': 21, 'title': 'Lecture.pdf'},
+                    {
+                      'type': 'File',
+                      'content_id': 21,
+                      'title': 'Duplicate.pdf',
+                    },
+                  ]),
+                  200,
+                  headers: {
+                    'content-type': ['application/json'],
+                    'link': [
+                      '<https://school.edu/api/v1/courses/1/modules/10/items?page=2>; rel="next"',
+                    ],
+                  },
+                );
+              case '/api/v1/courses/1/files/21':
+                return json({
+                  'id': 21,
+                  'filename': 'Lecture.pdf',
+                  'display_name': 'Lecture.pdf',
+                  'updated_at': 'today',
+                  'size': 9,
+                  'url': 'https://school.edu/asset',
+                });
+              case '/api/v1/courses/1/files/22':
+              case '/api/v1/courses/1/files/23':
+                return json({}, 403);
+              case '/courses/1/files/23/download':
+                return ResponseBody.fromString(
+                  '%PDF-1.7\n',
+                  200,
+                  headers: {
+                    'content-length': ['9'],
+                    'content-disposition': [
+                      "attachment; filename*=UTF-8''Posted%20lecture.pdf",
+                    ],
+                  },
+                );
+              case '/asset':
+                return ResponseBody.fromString(
+                  'PDF bytes',
+                  200,
+                  headers: {
+                    'content-length': ['9'],
+                  },
+                );
+              case '/courses/1/files/22/download':
+                return json({}, 403);
+              case '/api/v1/courses/1/assignments':
+                return json({}, 403);
+              default:
+                throw StateError('Unexpected test endpoint');
+            }
+          });
+        try {
+          final provider = CanvasProvider(
+            'https://school.edu',
+            'test',
+            client: dio,
+          );
+          await provider.courses();
+          final report = await provider.importCourse(workspace, {
+            'id': 1,
+            'name': 'Example course',
+          }, (_) {});
+          expect(report.imported, 2);
+          expect(report.skipped, 1);
+          expect(
+            workspace.ofKind('document').map((d) => d.title),
+            containsAll(['Lecture.pdf', 'Posted lecture.pdf']),
+          );
+          expect(report.warnings.join(), contains('과제'));
+          expect(report.warnings.join(), isNot(contains('만료')));
+          expect(
+            requested.where((uri) => Uri.parse(uri).path == '/asset').length,
+            1,
+          );
+          expect(requested.any((uri) => uri.contains('items?page=2')), isTrue);
+        } finally {
+          await workspace.close();
+          await root.delete(recursive: true);
+        }
+      },
+    );
+  }
+  test('401 with valid course probe is permission, revoked token remains authentication failure', () async {
+    bool revoked = false;
+    final dio = Dio()
+      ..httpClientAdapter = _Adapter(
+        (r) => ResponseBody.fromString(
+          r.uri.path == '/api/v1/courses' && !revoked ? '[]' : '{}',
+          r.uri.path == '/api/v1/courses' && !revoked ? 200 : 401,
+          headers: {
+            'content-type': ['application/json'],
+          },
+        ),
+      );
+    final provider = CanvasProvider('https://school.edu', 'test', client: dio);
+    await provider.courses();
+    await expectLater(
+      provider.collection('/api/v1/courses/1/files'),
+      throwsA(
+        isA<CanvasRequestException>()
+            .having((e) => e.restricted, 'permission error', isTrue)
+            .having((e) => e.message, 'message', contains('토큰은 유효')),
+      ),
+    );
+    revoked = true;
+    await expectLater(
+      provider.collection('/api/v1/courses/1/files'),
+      throwsA(
+        isA<CanvasRequestException>().having(
+          (e) => e.authenticationFailed,
+          'revoked token',
+          isTrue,
+        ),
+      ),
+    );
+  });
   test(
     'download follows HTTPS CDN redirect without leaking Canvas bearer',
     () async {
