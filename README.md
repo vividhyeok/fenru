@@ -6,7 +6,7 @@
 
 ## 다운로드
 
-[v0.1.0-alpha.2 개발 프리릴리스](https://github.com/vividhyeok/fenru/releases/tag/v0.1.0-alpha.2)를 게시했습니다. [Windows 설치 프로그램](https://github.com/vividhyeok/fenru/releases/download/v0.1.0-alpha.2/Fenru-Windows-x64-Setup.exe), [Portable ZIP](https://github.com/vividhyeok/fenru/releases/download/v0.1.0-alpha.2/Fenru-Windows-x64-portable.zip), [프로젝트 키 서명 Android APK](https://github.com/vividhyeok/fenru/releases/download/v0.1.0-alpha.2/Fenru-Android-release.apk)를 제공합니다. 체크섬과 공개 서명 인증서 정보는 릴리스에 포함됩니다. [최종 CI](https://github.com/vividhyeok/fenru/actions/runs/39568161638)는 26개 unit/widget 테스트, Windows/Android 문서 통합 테스트와 두 플랫폼 빌드/패키징을 통과했습니다.
+[v0.1.0-alpha.4 개발 프리릴리스](https://github.com/vividhyeok/fenru/releases/tag/v0.1.0-alpha.4)를 게시했습니다. [Windows 설치 프로그램](https://github.com/vividhyeok/fenru/releases/download/v0.1.0-alpha.4/Fenru-Windows-x64-Setup.exe), [Portable ZIP](https://github.com/vividhyeok/fenru/releases/download/v0.1.0-alpha.4/Fenru-Windows-x64-portable.zip), [프로젝트 키 서명 Android APK](https://github.com/vividhyeok/fenru/releases/download/v0.1.0-alpha.4/Fenru-Android-release.apk)를 제공합니다. 체크섬과 공개 서명 인증서 정보는 릴리스에 포함됩니다. [최종 CI](https://github.com/vividhyeok/fenru/actions/runs/39601030713)는 32개 unit/widget 테스트, Windows/Android 문서 통합 테스트와 두 플랫폼 빌드/패키징을 통과했습니다.
 
 ## 구현한 기능
 

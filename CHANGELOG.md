@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0-alpha.4 — 제주대 LearningX 문서 가져오기 후보
+## 0.1.0-alpha.4 — 2026-10-21 제주대 LearningX 문서 가져오기 수정
 
 - 실제 계정 진단으로 과목 API 200/파일 목록 401, LearningX ExternalTool 자료 구성을 확인.
 - Canvas의 공식 서명 LTI 주차별 학습 연결로 LearningX 단기 인증을 얻고 모듈의 첨부자료와 Commons 문서 다운로드 지원.

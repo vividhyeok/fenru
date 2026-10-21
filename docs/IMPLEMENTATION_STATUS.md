@@ -3,13 +3,15 @@
 최종 갱신: 2026-10-21 (Asia/Seoul)
 
 ## 상태
-Canvas 수정 후보 alpha.4 개발 중: 사용자가 과목 목록은 조회되지만 가져오기에서 401이 발생한다고 보고. 기존 코드의 권한 오류/토큰 만료 오분류를 수정하고 파일 목록+모듈 탐색, 개별 권한 오류 건너뜀, 결과 보고를 추가했습니다. alpha.3 후보 CI는 실제 학교 LearningX 구조를 반영하기 위해 중단했습니다.
+Canvas 수정 alpha.4 배포 완료: 사용자가 과목 목록은 조회되지만 가져오기에서 401이 발생한다고 보고. 기존 코드의 권한 오류/토큰 만료 오분류를 수정하고 파일 목록+모듈 탐색, 개별 권한 오류 건너뜀, 결과 보고를 추가했습니다. alpha.3 후보 CI는 실제 학교 LearningX 구조를 반영하기 위해 중단했습니다.
 
-alpha.4 로컬 검증: unit/widget 전체 32개 통과, flutter analyze 오류/경고/info 없음. 새 테스트는 유효한 토큰의 Files 401/실제 인증 실패 구분, 비어 있거나 제한된 파일 목록에서 모듈 탐색/페이지네이션/중복 제거, 제한된 개별 다운로드와 과제 건너뜀, 로그인 HTML 거부, LearningX 서명 LTI 흐름/첨부파일/누락 다운로드 주소/신뢰하지 않는 출처 차단/비밀 외부 전송 방지를 포함합니다. 플랫폼 빌드는 CI에서 검증할 예정입니다.
+alpha.4 로컬 검증: unit/widget 전체 32개 통과, flutter analyze 오류/경고/info 없음. 새 테스트는 유효한 토큰의 Files 401/실제 인증 실패 구분, 비어 있거나 제한된 파일 목록에서 모듈 탐색/페이지네이션/중복 제거, 제한된 개별 다운로드와 과제 건너뜀, 로그인 HTML 거부, LearningX 서명 LTI 흐름/첨부파일/누락 다운로드 주소/신뢰하지 않는 출처 차단/비밀 외부 전송 방지를 포함합니다.
+
+alpha.4 Actions 39601030713 전체 성공: Windows 포맷/분석/32개 테스트/문서 통합 테스트/release 빌드/설치형·Portable 패키징, Android 프로젝트 키 서명 APK/문서 통합 테스트/apksigner 검증, Release 게시 완료. 다운로드한 Windows 두 배포 파일 SHA256을 확인하고 dist/canvas-fix-alpha4/app/fenru.exe를 실행했으며 Fenru 창 응답 상태를 확인했습니다. 실제 GUI에서 과목 가져오기를 재시도한 사용자 결과는 아직 확인 전입니다.
 
 실제 제주대 읽기 전용 진단: OS 보안 저장소의 Canvas 토큰을 메모리에서만 사용하고 값은 출력/파일 저장하지 않았습니다. 과목 13개 조회 200, 표본 3개 과목 파일 목록 401, 모듈/과제 200 확인. 자료가 LearningX ExternalTool로 게시되며 Canvas PAT와 별도 인증을 사용합니다. 공식 sessionless_launch → 같은 학교의 서명된 주차별 학습 LTI 인증 → LearningX 모듈 조회 → 첨부 파일 API/Commons XML 다운로드 정보 경로를 구현했습니다. 실제 Dart 어댑터로 첨부자료 과목 11개, PDF 과목 8개 다운로드 주소(추가 6개는 원본 저장소 다운로드 주소 없음)를 확인했고 PDF 1개 HTTP 200/%PDF-/295146 bytes 수신을 확인했습니다. 실험은 임시 진단 프로세스에서 수행했으며 사용자 작업 공간에 문서를 삽입하지 않았습니다. 영화/퀴즈/설문/출석 기록 완료 요청은 하지 않습니다. 최종 GUI 가져오기 확인은 빌드 후 필요합니다.
 
-전체 요구사항 미완료. 로컬 학습 기능과 선택적 AI BYOK를 구현한 v0.1.0-alpha.2 개발 프리릴리스를 게시했습니다. 기능 코드 작성과 실행 검증을 구분합니다.
+전체 요구사항 미완료. 로컬 학습 기능과 선택적 AI BYOK를 구현하고 Canvas/LearningX를 보완한 v0.1.0-alpha.4 개발 프리릴리스를 게시했습니다. 기능 코드 작성과 실행 검증을 구분합니다.
 
 ## 코드 작성
 - Flutter/Riverpod/go_router 앱, 반응형 내비게이션, 디자인 토큰, 온보딩 진행 저장
@@ -47,7 +49,7 @@ alpha.4 로컬 검증: unit/widget 전체 32개 통과, flutter analyze 오류/�
 ## 미구현
 Google OAuth/Drive 객체 동기화, 전체 문서/과목/라이브러리 RAG,
 주석 Undo/Redo·색상 UI·목차·암호 입력 UI,
-PDF 텍스트 인덱싱, Canvas Modules/Pages/공지/Calendar와 자동 주기,
+PDF 텍스트 인덱싱, Canvas Pages/공지/Calendar와 자동 주기(Modules 파일/제주대 LearningX 문서는 지원),
 Markdown 백링크·수식·이미지 삽입, Android Glance 위젯·공유 인텐트·알림,
 Windows 트레이·파일 연결·창 위치, 영어 UI, Windows 코드 서명·MSIX.
 
@@ -70,6 +72,13 @@ Canvas 다운로드는 HTTPS 리다이렉트를 처리하고 외부 호스트 �
 - Android 프로젝트 키는 생성/Secrets 보관 완료. 별도 안전한 키 백업과 선택적 Windows 서명 인증서 필요.
 
 ## 산출물
+- [최신 v0.1.0-alpha.4 프리릴리스](https://github.com/vividhyeok/fenru/releases/tag/v0.1.0-alpha.4)
+- [최신 Windows 설치 프로그램](https://github.com/vividhyeok/fenru/releases/download/v0.1.0-alpha.4/Fenru-Windows-x64-Setup.exe)
+- [최신 Windows Portable ZIP](https://github.com/vividhyeok/fenru/releases/download/v0.1.0-alpha.4/Fenru-Windows-x64-portable.zip)
+- [최신 Android 프로젝트 키 서명 APK](https://github.com/vividhyeok/fenru/releases/download/v0.1.0-alpha.4/Fenru-Android-release.apk)
+- [최신 Actions 검증](https://github.com/vividhyeok/fenru/actions/runs/39601030713)
+
+이전 검증/배포 기록:
 - [v0.1.0-alpha.2 프리릴리스](https://github.com/vividhyeok/fenru/releases/tag/v0.1.0-alpha.2)
 - [Windows 설치 프로그램](https://github.com/vividhyeok/fenru/releases/download/v0.1.0-alpha.2/Fenru-Windows-x64-Setup.exe)
 - [Windows Portable ZIP](https://github.com/vividhyeok/fenru/releases/download/v0.1.0-alpha.2/Fenru-Windows-x64-portable.zip)
