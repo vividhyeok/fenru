@@ -37,10 +37,61 @@ class WorkspaceObject {
     if (!RegExp(r'^[a-zA-Z0-9-]{1,80}$').hasMatch(id)) {
       throw const FormatException('Invalid object ID');
     }
+    const kinds = {
+      'document',
+      'note',
+      'annotation',
+      'course',
+      'task',
+      'resource',
+    };
+    if (!kinds.contains(j['kind']) ||
+        j['revision'] is! int ||
+        (j['revision'] as int) < 1) {
+      throw const FormatException('Invalid object kind or revision');
+    }
+    final data = Map<String, dynamic>.from(j['data'] as Map);
+    for (final name in [
+      'title',
+      'body',
+      'tags',
+      'folder',
+      'file',
+      'hash',
+      'documentId',
+    ]) {
+      if (data.containsKey(name) && data[name] is! String) {
+        throw const FormatException('Invalid text field');
+      }
+    }
+    final clock = data['_clock'];
+    if (clock is! Map ||
+        clock.values.any((value) => value is! int || value < 0)) {
+      throw const FormatException('Invalid vector clock');
+    }
+    if (data['page'] != null &&
+        (data['page'] is! int || (data['page'] as int) < 1)) {
+      throw const FormatException('Invalid page');
+    }
+    final rectangles = data['rectangles'];
+    if (rectangles != null) {
+      if (rectangles is! List) {
+        throw const FormatException('Invalid rectangles');
+      }
+      for (final r in rectangles) {
+        if (r is! List ||
+            r.length != 4 ||
+            r.any((v) => v is! num || !v.isFinite) ||
+            (r[0] as num) > (r[2] as num) ||
+            (r[1] as num) < (r[3] as num)) {
+          throw const FormatException('Invalid rectangle coordinates');
+        }
+      }
+    }
     return WorkspaceObject(
       id: id,
       kind: j['kind'] as String,
-      data: Map<String, dynamic>.from(j['data'] as Map),
+      data: data,
       revision: j['revision'] as int,
       device: j['device'] as String,
       updated: DateTime.parse(j['updated'] as String),

@@ -27,6 +27,9 @@ void main() {
         ))!;
         final w = Workspace(temp, WorkspaceDatabase.memory());
         await tester.runAsync(w.initialize);
+        final icons = FontLoader('MaterialIcons');
+        icons.addFont(rootBundle.load('fonts/MaterialIcons-Regular.otf'));
+        await tester.runAsync(icons.load);
         final fontPath = File('C:/Windows/Fonts/malgun.ttf');
         if (fontPath.existsSync()) {
           final loader = FontLoader('Malgun Gothic');
@@ -65,6 +68,11 @@ void main() {
           ).writeAsBytes(bytes!.buffer.asUint8List());
           image.dispose();
         });
+        for (final label in ['라이브러리', '노트', '플래너', '설정']) {
+          await tester.tap(find.text(label).first);
+          await tester.pumpAndSettle();
+          expect(tester.takeException(), isNull, reason: '$label at $size');
+        }
         await tester.pumpWidget(const SizedBox());
         await tester.runAsync(() async {
           await w.close();

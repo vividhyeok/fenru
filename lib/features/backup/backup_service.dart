@@ -41,18 +41,30 @@ class BackupService {
         'objects': workspace.objects.map((o) => o.toJson()).toList(),
       }),
     );
+    if (metadata.length > 16 * 1024 * 1024) {
+      throw const UserFacingException('메타데이터가 백업 한도 16MB를 초과했습니다.');
+    }
+    int total = metadata.length;
     archive.addFile(ArchiveFile('manifest.json', metadata.length, metadata));
     final paths = <String>{};
     for (final object in workspace.objects.where((o) => o.kind == 'document')) {
       final file = workspace.fileFor(object);
       final name = object.text('file').replaceAll('\\', '/');
       if (await file.exists() && paths.add(name)) {
+        total += await file.length();
+        if (total > maxArchiveSize) {
+          throw const UserFacingException('백업 크기가 1GB를 초과했습니다.');
+        }
         final bytes = await file.readAsBytes();
         archive.addFile(ArchiveFile(name, bytes.length, bytes));
       }
     }
     final temp = File('$destination.part');
-    await temp.writeAsBytes(ZipEncoder().encode(archive), flush: true);
+    final encoded = ZipEncoder().encode(archive);
+    if (encoded.length > maxArchiveSize) {
+      throw const UserFacingException('압축 백업이 1GB를 초과했습니다.');
+    }
+    await temp.writeAsBytes(encoded, flush: true);
     await temp.rename(destination);
   }
 
@@ -81,6 +93,9 @@ class BackupService {
     }
     final manifest = archive.findFile('manifest.json');
     if (manifest == null) throw const UserFacingException('Fenru 백업 파일이 아닙니다.');
+    if (manifest.size > 16 * 1024 * 1024) {
+      throw const UserFacingException('백업 메타데이터가 허용 크기를 초과했습니다.');
+    }
     final json = jsonDecode(utf8.decode(manifest.content)) as Json;
     if (json['format'] != 'fenru' || json['schema'] != 1) {
       throw const UserFacingException('지원하지 않는 백업 버전입니다.');
@@ -91,6 +106,9 @@ class BackupService {
         )
         .toList();
     final files = <String, List<int>>{};
+    if (incoming.map((o) => o.id).toSet().length != incoming.length) {
+      throw const UserFacingException('백업에 중복된 객체 ID가 있습니다.');
+    }
     for (final object in incoming.where((o) => o.kind == 'document')) {
       final target = workspace.fileFor(object);
       final entry = archive.findFile(object.text('file').replaceAll('\\', '/'));

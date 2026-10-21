@@ -28,6 +28,86 @@ class _DocumentReaderState extends State<DocumentReader> {
   Timer? pageTimer;
   bool panel = true;
   String? error;
+  late final searcher = PdfTextSearcher(controller);
+  @override
+  void initState() {
+    super.initState();
+    widget.workspace.addListener(refreshMarks);
+  }
+
+  void refreshMarks() {
+    if (mounted && controller.isReady) controller.invalidate();
+  }
+
+  Future<void> highlight(
+    PdfTextSelectionDelegate selection,
+    String type,
+  ) async {
+    if (!selection.isCopyAllowed || !selection.hasSelectedText) return;
+    await safely(() async {
+      final ranges = await selection.getSelectedTextRanges();
+      for (final range in ranges) {
+        final rectangles = range.enumerateFragmentBoundingRects().map((
+          fragment,
+        ) {
+          final r = fragment.bounds;
+          return [r.left, r.top, r.right, r.bottom];
+        }).toList();
+        await widget.workspace.save('annotation', {
+          'title':
+              '${type == 'underline' ? '밑줄' : '하이라이트'} · ${range.pageNumber}페이지',
+          'body': range.text,
+          'documentId': widget.document.id,
+          'page': range.pageNumber,
+          'type': type,
+          'rectangles': rectangles,
+          'start': range.start,
+          'end': range.end,
+          'versionHash': widget.document.text('hash'),
+          'color': 0xffffd54f,
+        });
+      }
+      await selection.clearTextSelection();
+    });
+  }
+
+  void paintMarks(Canvas canvas, Rect pageRect, PdfPage pdfPage) {
+    for (final mark
+        in widget.workspace
+            .ofKind('annotation')
+            .where(
+              (m) =>
+                  m.text('documentId') == widget.document.id &&
+                  m.number('page') == pdfPage.pageNumber,
+            )) {
+      for (final coordinates in mark.data['rectangles'] as List? ?? []) {
+        final values = (coordinates as List)
+            .map((v) => (v as num).toDouble())
+            .toList();
+        if (values.length != 4) continue;
+        final rect = PdfRect(
+          values[0],
+          values[1],
+          values[2],
+          values[3],
+        ).toRectInDocument(page: pdfPage, pageRect: pageRect);
+        final paint = Paint()
+          ..color = Color(mark.number('color', 0xffffd54f))
+              .withValues(alpha: .38);
+        if (mark.text('type') == 'underline') {
+          paint.strokeWidth = 2;
+          canvas.drawLine(
+            rect.bottomLeft,
+            rect.bottomRight,
+            paint..color = const Color(0xffb77900),
+          );
+        } else {
+          canvas.drawRect(rect, paint);
+        }
+      }
+    }
+  }
+
   Future<void> safely(Future<void> Function() action) async {
     try {
       await action();
@@ -40,6 +120,8 @@ class _DocumentReaderState extends State<DocumentReader> {
 
   @override
   void dispose() {
+    widget.workspace.removeListener(refreshMarks);
+    searcher.dispose();
     if (pageTimer?.isActive == true) {
       widget.workspace.recordPage(widget.document, page).catchError((_) {});
     }
@@ -162,15 +244,6 @@ class _DocumentReaderState extends State<DocumentReader> {
         title: Text(doc.title, overflow: TextOverflow.ellipsis),
         actions: [
           if (pdf) ...[
-            IconButton(
-              tooltip: '이전 페이지',
-              icon: const Icon(Icons.chevron_left),
-              onPressed: () {
-                if (controller.isReady && page > 1) {
-                  controller.goToPage(pageNumber: page - 1);
-                }
-              },
-            ),
             TextButton(
               onPressed: () async {
                 final value = await askText(
@@ -187,15 +260,6 @@ class _DocumentReaderState extends State<DocumentReader> {
                 }
               },
               child: Text('$page'),
-            ),
-            IconButton(
-              tooltip: '다음 페이지',
-              icon: const Icon(Icons.chevron_right),
-              onPressed: () {
-                if (controller.isReady && page < controller.pageCount) {
-                  controller.goToPage(pageNumber: page + 1);
-                }
-              },
             ),
             IconButton(
               tooltip: '책갈피 추가',
@@ -233,6 +297,13 @@ class _DocumentReaderState extends State<DocumentReader> {
                 if (result.type != ResultType.done && mounted) {
                   setState(() => error = '이 형식을 열 수 있는 외부 앱을 설치하세요.');
                 }
+              } else if (value == 'search') {
+                final text = await askText(context, 'PDF 본문 검색');
+                if (text != null && text.isNotEmpty) {
+                  searcher.startTextSearch(text);
+                }
+              } else if (value == 'nextMatch') {
+                await searcher.goToNextMatch();
               } else if (controller.isReady) {
                 controller.goTo(
                   controller.calcMatrixFitWidthForPage(pageNumber: page),
@@ -240,6 +311,13 @@ class _DocumentReaderState extends State<DocumentReader> {
               }
             },
             itemBuilder: (_) => [
+              if (pdf)
+                const PopupMenuItem(value: 'search', child: Text('PDF 본문 검색')),
+              if (pdf)
+                const PopupMenuItem(
+                  value: 'nextMatch',
+                  child: Text('다음 검색 결과'),
+                ),
               if (pdf)
                 const PopupMenuItem(value: 'fit', child: Text('너비에 맞추기')),
               const PopupMenuItem(value: 'external', child: Text('외부 앱으로 열기')),
@@ -269,6 +347,33 @@ class _DocumentReaderState extends State<DocumentReader> {
                           controller: controller,
                           initialPageNumber: page,
                           params: PdfViewerParams(
+                            pagePaintCallbacks: [
+                              paintMarks,
+                              searcher.pageTextMatchPaintCallback,
+                            ],
+                            customizeContextMenuItems: (params, items) {
+                              final selection = params.textSelectionDelegate;
+                              if (!selection.isCopyAllowed ||
+                                  !selection.hasSelectedText) {
+                                return;
+                              }
+                              items.addAll([
+                                ContextMenuButtonItem(
+                                  label: '하이라이트',
+                                  onPressed: () {
+                                    params.dismissContextMenu();
+                                    highlight(selection, 'highlight');
+                                  },
+                                ),
+                                ContextMenuButtonItem(
+                                  label: '밑줄',
+                                  onPressed: () {
+                                    params.dismissContextMenu();
+                                    highlight(selection, 'underline');
+                                  },
+                                ),
+                              ]);
+                            },
                             backgroundColor: Theme.of(context)
                                 .colorScheme
                                 .surfaceContainer,
@@ -299,6 +404,34 @@ class _DocumentReaderState extends State<DocumentReader> {
           ),
         ],
       ),
+      bottomNavigationBar: pdf
+          ? SafeArea(
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  IconButton(
+                    tooltip: '이전 페이지',
+                    icon: const Icon(Icons.chevron_left),
+                    onPressed: () {
+                      if (controller.isReady && page > 1) {
+                        controller.goToPage(pageNumber: page - 1);
+                      }
+                    },
+                  ),
+                  Text('$page 페이지'),
+                  IconButton(
+                    tooltip: '다음 페이지',
+                    icon: const Icon(Icons.chevron_right),
+                    onPressed: () {
+                      if (controller.isReady && page < controller.pageCount) {
+                        controller.goToPage(pageNumber: page + 1);
+                      }
+                    },
+                  ),
+                ],
+              ),
+            )
+          : null,
     );
   }
 }
