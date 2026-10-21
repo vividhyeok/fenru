@@ -2,7 +2,16 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 Uint8List samplePdf() {
-  const stream = 'BT /F1 24 Tf 72 700 Td (Fenru learning workspace) Tj ET';
+  const stream =
+      'BT /F1 24 Tf 72 720 Td (Fenru learning workspace) Tj '
+      '/F1 16 Tf 0 -48 Td (Course notes: Cells and energy) Tj '
+      '/F1 13 Tf 0 -38 Td (Key question: How do plants store energy?) Tj '
+      '0 -30 Td (Sunlight is converted into chemical energy.) Tj '
+      '0 -26 Td (Chlorophyll absorbs light in chloroplasts.) Tj '
+      '/F1 16 Tf 0 -50 Td (Active reading) Tj '
+      '/F1 13 Tf 0 -34 Td (Read the source. Highlight evidence. Ask a question.) Tj '
+      '0 -26 Td (Compare documents and inspect each page citation.) Tj '
+      '0 -50 Td (Original synthetic document for integration tests.) Tj ET';
   final objects = [
     '<< /Type /Catalog /Pages 2 0 R >>',
     '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',

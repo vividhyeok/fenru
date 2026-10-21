@@ -12,6 +12,8 @@ import '../core/workspace.dart';
 import '../features/backup/backup_service.dart';
 import '../features/reader/reader.dart';
 import '../features/ai/chat.dart';
+import '../features/ai/course_workspace.dart';
+import '../features/ai/study_context.dart';
 import '../features/ai/settings.dart';
 import '../integrations/canvas.dart';
 import '../integrations/credentials.dart';
@@ -35,7 +37,7 @@ class _FenruShellState extends State<FenruShell> {
   final searchController = TextEditingController();
   final selected = <String>{};
   List<WorkspaceObject>? results;
-  static const labels = ['홈', '라이브러리', '과목', '노트', '플래너', '설정', 'AI'];
+  static const labels = ['홈', '라이브러리', '과목', '노트', '플래너', '설정'];
   static const icons = [
     Icons.home_outlined,
     Icons.folder_outlined,
@@ -43,7 +45,6 @@ class _FenruShellState extends State<FenruShell> {
     Icons.edit_note,
     Icons.calendar_month_outlined,
     Icons.settings_outlined,
-    Icons.auto_awesome_outlined,
   ];
   @override
   void dispose() {
@@ -145,13 +146,12 @@ class _FenruShellState extends State<FenruShell> {
         searchController.clear();
       });
     } else if (o.kind == 'course') {
-      setState(() {
-        tab = 1;
-        folder = o.title;
-        query = '';
-        results = null;
-        searchController.clear();
-      });
+      Navigator.push(
+        context,
+        MaterialPageRoute<void>(
+          builder: (_) => CourseWorkspace(workspace: w, course: o),
+        ),
+      );
     } else if (o.kind == 'annotation') {
       final doc = w.byId(o.text('documentId'));
       if (doc != null && !doc.deleted) {
@@ -170,12 +170,19 @@ class _FenruShellState extends State<FenruShell> {
   }
 
   void openAI({String? sessionId}) {
+    final session = w.byId(sessionId ?? '');
     Navigator.push(
       context,
       MaterialPageRoute<void>(
         builder: (_) => AIChat(
           workspace: w,
           sessionId: sessionId,
+          documentId: session?.text('documentId').isNotEmpty == true
+              ? session!.text('documentId')
+              : null,
+          courseId: session?.text('courseId').isNotEmpty == true
+              ? session!.text('courseId')
+              : null,
           onCitation: (id, page) {
             final doc = w.byId(id);
             if (doc != null && !doc.deleted) {
@@ -348,6 +355,17 @@ class _FenruShellState extends State<FenruShell> {
                       setState(() => selected.add(o.id));
                     case 'edit':
                       await editDocument(o);
+                    case 'ask':
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute<void>(
+                          builder: (_) => AIChat(
+                            workspace: w,
+                            documentId: o.id,
+                            scopeTitle: o.title,
+                          ),
+                        ),
+                      );
                     case 'note':
                       await run(() => createNote(documentId: o.id));
                     case 'trash':
@@ -361,6 +379,10 @@ class _FenruShellState extends State<FenruShell> {
                     : [
                         const PopupMenuItem(value: 'select', child: Text('선택')),
                         if (o.kind == 'document') ...[
+                          const PopupMenuItem(
+                            value: 'ask',
+                            child: Text('이 자료에 질문'),
+                          ),
                           const PopupMenuItem(
                             value: 'edit',
                             child: Text('이름 · 폴더 · 태그 수정'),
@@ -780,12 +802,23 @@ class _FenruShellState extends State<FenruShell> {
             title: Text(item.title),
             leading: const Icon(Icons.school_outlined),
             subtitle: Text(
-              '${w.ofKind('document').where((d) => d.text('folder') == item.title).length}개 자료',
+              '${StudyContextService.courseDocuments(w, item).length}개 자료',
             ),
-            onTap: () => setState(() {
-              folder = item.title;
-              tab = 1;
-            }),
+            onTap: () => openObject(item),
+            trailing: IconButton(
+              tooltip: '과목 자료에 질문',
+              icon: const Icon(Icons.auto_awesome_outlined),
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute<void>(
+                  builder: (_) => AIChat(
+                    workspace: w,
+                    courseId: item.id,
+                    scopeTitle: item.title,
+                  ),
+                ),
+              ),
+            ),
           ),
       ],
     );
@@ -976,7 +1009,7 @@ class _FenruShellState extends State<FenruShell> {
       ),
       const SizedBox(height: 20),
       const Text(
-        'Fenru 0.1.0-alpha.4 · 개발 프리릴리스\n로컬 데이터는 자동 저장됩니다. 별도 계정이나 추적 SDK를 사용하지 않습니다.',
+        'Fenru 0.1.0-alpha.5 · 개발 프리릴리스\n로컬 데이터는 자동 저장됩니다. 별도 계정이나 추적 SDK를 사용하지 않습니다.',
       ),
     ],
   );
@@ -1012,11 +1045,6 @@ class _FenruShellState extends State<FenruShell> {
             ],
           ),
           actions: [
-            IconButton(
-              tooltip: 'AI 학습 대화',
-              onPressed: () => openAI(),
-              icon: const Icon(Icons.auto_awesome_outlined),
-            ),
             IconButton(
               tooltip: '도움말',
               onPressed: help,
@@ -1137,7 +1165,6 @@ class _FenruShellState extends State<FenruShell> {
                                 ],
                               ),
                               4 => planner(),
-                              6 => AIChat(workspace: w, embedded: true),
                               _ => settings(),
                             },
                     ),
@@ -1150,13 +1177,13 @@ class _FenruShellState extends State<FenruShell> {
         bottomNavigationBar: wide
             ? null
             : NavigationBar(
-                selectedIndex: [0, 1, 3, 4, 5].indexOf(tab).clamp(0, 4),
+                selectedIndex: [0, 1, 2, 3, 4, 5].indexOf(tab).clamp(0, 5),
                 onDestinationSelected: (i) => setState(() {
-                  tab = [0, 1, 3, 4, 5][i];
+                  tab = [0, 1, 2, 3, 4, 5][i];
                   selected.clear();
                 }),
                 destinations: [
-                  for (final i in [0, 1, 3, 4, 5])
+                  for (final i in [0, 1, 2, 3, 4, 5])
                     NavigationDestination(
                       icon: Icon(icons[i]),
                       label: labels[i],

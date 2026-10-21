@@ -1,7 +1,7 @@
 name: fenru
 description: Local-first personal learning workspace for Windows and Android.
 publish_to: none
-version: 0.1.0-alpha.4+4
+version: 0.1.0-alpha.5+5
 environment:
   sdk: ^3.13.5
 dependencies:

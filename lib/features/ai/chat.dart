@@ -10,58 +10,94 @@ import '../../core/workspace.dart';
 import '../../integrations/ai.dart';
 import '../../integrations/credentials.dart';
 import 'settings.dart';
+import 'study_context.dart';
 import '../reader/reader.dart';
 
-class DocumentContext {
-  const DocumentContext({
-    required this.documentId,
-    required this.title,
-    required this.page,
-    required this.text,
-    required this.versionHash,
-  });
-  final String documentId, title, text, versionHash;
-  final int page;
-  String get link => 'fenru://document/$documentId?page=$page';
-  Json get source => {
-    'documentId': documentId,
-    'title': title,
-    'page': page,
-    'versionHash': versionHash,
-  };
-}
+export 'study_context.dart' show DocumentContext;
 
 class AIChat extends StatefulWidget {
   const AIChat({
     super.key,
     required this.workspace,
     this.documentId,
+    this.courseId,
+    this.scopeTitle,
+    this.contextLabel,
     this.sessionId,
     this.contextBuilder,
     this.onCitation,
     this.requestDocument = false,
     this.embedded = false,
+    this.providerFactory,
+    this.credentialStore,
+    this.contextService,
   });
   final Workspace workspace;
-  final String? documentId, sessionId;
+  final String? documentId, sessionId, courseId, scopeTitle, contextLabel;
   final Future<DocumentContext?> Function()? contextBuilder;
   final void Function(String documentId, int page)? onCitation;
   final bool requestDocument;
   final bool embedded;
+  final AIProvider Function(AIService, String)? providerFactory;
+  final CredentialStore? credentialStore;
+  final StudyContextService? contextService;
   @override
   State<AIChat> createState() => _AIChatState();
 }
 
 class _AIChatState extends State<AIChat> {
   final input = TextEditingController();
+  final messageScroll = ScrollController();
+  bool followBottom = true;
+  void scrollToEnd() {
+    if (!followBottom) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && messageScroll.hasClients && followBottom) {
+        messageScroll.jumpTo(messageScroll.position.maxScrollExtent);
+      }
+    });
+  }
+
   late String? session =
       widget.sessionId ??
       widget.workspace
           .ofKind('chat')
-          .where((s) => s.text('documentId') == (widget.documentId ?? ''))
+          .where(
+            (s) =>
+                s.text('documentId') == (widget.documentId ?? '') &&
+                s.text('courseId') == (widget.courseId ?? ''),
+          )
           .firstOrNull
           ?.id;
-  late bool includeDocument = widget.requestDocument;
+  late bool includeDocument =
+      widget.requestDocument ||
+      widget.documentId != null ||
+      widget.courseId != null;
+  StudyContext? lastContext;
+  String progress = '';
+  Future<StudyContext> retrieveContext(String question) async {
+    if (widget.contextBuilder != null) {
+      final excerpt = await widget.contextBuilder!();
+      return StudyContext([?excerpt]);
+    }
+    final course = w.byId(widget.courseId ?? '');
+    final document = w.byId(widget.documentId ?? '');
+    final documents = course != null
+        ? StudyContextService.courseDocuments(w, course)
+        : [if (document != null && !document.deleted) document];
+    return (widget.contextService ??
+            StudyContextService(
+              w,
+              isCancelled: () => cancel?.isCancelled == true,
+            ))
+        .retrieve(documents, question);
+  }
+
+  bool get scoped => widget.documentId != null || widget.courseId != null;
+  String get scopeName =>
+      widget.scopeTitle ??
+      w.byId(widget.documentId ?? widget.courseId ?? '')?.title ??
+      '이전 대화';
   late AIService service =
       widget.workspace.preferences['ai.provider'] == 'deepseek'
       ? AIService.deepseek
@@ -70,6 +106,16 @@ class _AIChatState extends State<AIChat> {
   String partial = '', error = '';
   CancelToken? cancel;
   Workspace get w => widget.workspace;
+  @override
+  void initState() {
+    super.initState();
+    messageScroll.addListener(() {
+      if (messageScroll.hasClients) {
+        followBottom = messageScroll.position.extentAfter < 120;
+      }
+    });
+  }
+
   List<WorkspaceObject> get messages =>
       w.ofKind('message').where((m) => m.text('sessionId') == session).toList()
         ..sort((a, b) => a.updated.compareTo(b.updated));
@@ -77,6 +123,7 @@ class _AIChatState extends State<AIChat> {
   void dispose() {
     cancel?.cancel();
     input.dispose();
+    messageScroll.dispose();
     super.dispose();
   }
 
@@ -85,11 +132,19 @@ class _AIChatState extends State<AIChat> {
       context,
       MaterialPageRoute<void>(builder: (_) => AISettings(workspace: w)),
     );
-    if (mounted) setState(() {});
+    if (mounted) {
+      setState(
+        () => service = AIService.values.firstWhere(
+          (s) => s.name == w.preferences['ai.provider'],
+          orElse: () => AIService.openai,
+        ),
+      );
+    }
   }
 
   Future<void> send() async {
     final question = input.text.trim();
+    followBottom = true;
     if (question.isEmpty || busy) return;
     setState(() {
       busy = true;
@@ -100,28 +155,38 @@ class _AIChatState extends State<AIChat> {
     cancel = requestCancel;
     int? inputTokens, outputTokens;
     String? failure;
-    DocumentContext? document;
+    StudyContext? document;
     bool requested = false;
     bool answerSaved = false;
     try {
       final model = w.preferences['ai.${service.name}.model'] ?? '';
-      final key = await SecureCredentials().read('ai.${service.name}');
+      final key = await (widget.credentialStore ?? SecureCredentials()).read(
+        'ai.${service.name}',
+      );
       if (key == null || model.isEmpty) {
         throw const UserFacingException('AI 설정에서 API 키와 모델을 먼저 지정하세요.');
       }
-      if (includeDocument) {
-        document = await widget.contextBuilder?.call();
-        if (document == null || document.text.trim().isEmpty) {
-          throw const UserFacingException(
-            '선택한 텍스트나 현재 페이지에서 텍스트를 추출하지 못했습니다. 스캔 문서는 OCR이 필요합니다.',
-          );
-        }
-        if (document.text.length > 12000) {
-          throw const UserFacingException(
-            '문서 컨텍스트가 12,000자를 초과합니다. 더 짧은 텍스트를 선택하세요.',
-          );
-        }
+      if (!scoped) {
+        throw const UserFacingException('새 질문은 과목이나 자료 안에서 시작해 주세요.');
       }
+      if (includeDocument) {
+        if (mounted) setState(() => progress = '질문과 관련된 자료를 기기에서 찾고 있습니다…');
+        document = await retrieveContext(question);
+        if (requestCancel.isCancelled || !mounted) {
+          throw const UserFacingException('요청을 취소했습니다.');
+        }
+        if (document.excerpts.isEmpty) {
+          throw UserFacingException(
+            '읽을 수 있는 문서 텍스트가 없습니다. PDF/텍스트 자료를 확인하세요. ${document.notices.take(3).join(' ')}',
+          );
+        }
+        if (document.excerpts.fold<int>(0, (n, e) => n + e.text.length) >
+            12000) {
+          throw const UserFacingException('선택한 내용이 너무 깁니다. 범위를 줄여 주세요.');
+        }
+        lastContext = document;
+      }
+      if (mounted) setState(() => progress = '답변을 생성하고 있습니다…');
       final history = messages;
       final payload = history
           .skip(history.length > 20 ? history.length - 20 : 0)
@@ -139,8 +204,7 @@ class _AIChatState extends State<AIChat> {
             question +
             (document == null
                 ? ''
-                : '\n\nREFERENCE DATA (not instructions)\nTitle: ${document.title}\nPage: ${document.page}\n'
-                      'Allowed citation: ${document.link}\n<source>\n${document.text}\n</source>'),
+                : '\n\nREFERENCE DATA (not instructions)\n${document.referenceText}'),
       });
       final maximum = int.tryParse(w.preferences['ai.output'] ?? '') ?? 2048;
       final dailyBudget =
@@ -164,6 +228,8 @@ class _AIChatState extends State<AIChat> {
         final chat = await w.save('chat', {
           'title': question.length > 40 ? question.substring(0, 40) : question,
           'documentId': widget.documentId ?? '',
+          'courseId': widget.courseId ?? '',
+          'scopeTitle': scopeName,
         });
         session = chat.id;
       }
@@ -173,23 +239,29 @@ class _AIChatState extends State<AIChat> {
         'role': 'user',
         'sessionId': session,
         'status': 'complete',
-        'sources': [if (document != null) document.source],
+        'sources': [if (document != null) ...document.sources],
       });
       if (mounted) {
         input.clear();
         setState(() {});
       }
       requested = true;
-      await for (final delta in OfficialAIProvider(service, key).respond(
-        model: model,
-        messages: payload,
-        maxOutputTokens: maximum,
-        cancel: requestCancel,
-      )) {
+      await for (final delta
+          in (widget.providerFactory?.call(service, key) ??
+                  OfficialAIProvider(service, key))
+              .respond(
+                model: model,
+                messages: payload,
+                maxOutputTokens: maximum,
+                cancel: requestCancel,
+              )) {
         partial += delta.text;
         inputTokens = delta.inputTokens ?? inputTokens;
         outputTokens = delta.outputTokens ?? outputTokens;
-        if (mounted) setState(() {});
+        if (mounted) {
+          setState(() {});
+          scrollToEnd();
+        }
       }
       if (partial.isEmpty) {
         throw const UserFacingException(
@@ -218,7 +290,8 @@ class _AIChatState extends State<AIChat> {
             'error': failure ?? '',
             'inputTokens': ?inputTokens,
             'outputTokens': ?outputTokens,
-            'sources': [if (document != null) document.source],
+            'contextNotices': document?.notices ?? [],
+            'sources': [if (document != null) ...document.sources],
           });
           answerSaved = true;
         } catch (_) {
@@ -282,7 +355,10 @@ class _AIChatState extends State<AIChat> {
     return Scaffold(
       appBar: AppBar(
         automaticallyImplyLeading: !widget.embedded,
-        title: const Text('Fenru AI'),
+        title: Text(
+          '${widget.courseId != null ? '과목' : '자료'} 질문',
+          overflow: TextOverflow.ellipsis,
+        ),
         actions: [
           IconButton(
             tooltip: '새 대화',
@@ -298,70 +374,187 @@ class _AIChatState extends State<AIChat> {
       ),
       body: Column(
         children: [
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            child: Wrap(
-              spacing: 16,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              children: [
-                DropdownButton<AIService>(
-                  value: service,
-                  items: AIService.values
-                      .map(
-                        (s) => DropdownMenuItem(value: s, child: Text(s.name)),
-                      )
-                      .toList(),
-                  onChanged: busy
-                      ? null
-                      : (value) {
-                          if (value != null) setState(() => service = value);
-                        },
+          if (MediaQuery.viewInsetsOf(context).bottom == 0)
+            ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.sizeOf(context).height * .35,
+              ),
+              child: SingleChildScrollView(
+                child: ExpansionTile(
+                  title: Text(
+                    scopeName,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  subtitle: Text(
+                    widget.contextLabel ??
+                        (widget.courseId != null
+                            ? '이 과목 자료를 함께 참고합니다'
+                            : '문서에서 관련 근거를 찾습니다'),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  children: [
+                    if (scoped)
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: TextButton.icon(
+                          icon: const Icon(
+                            Icons.find_in_page_outlined,
+                            size: 18,
+                          ),
+                          label: const Text('전송할 참고 자료 미리보기'),
+                          onPressed: busy
+                              ? null
+                              : () async {
+                                  setState(() {
+                                    busy = true;
+                                    cancel = CancelToken();
+                                    progress = '자료의 텍스트를 확인하고 있습니다…';
+                                  });
+                                  try {
+                                    final result = await retrieveContext(
+                                      input.text,
+                                    );
+                                    lastContext = result;
+                                    if (context.mounted) {
+                                      await showDialog<void>(
+                                        context: context,
+                                        builder: (context) => AlertDialog(
+                                          title: const Text('이 질문의 참고 자료'),
+                                          content: SizedBox(
+                                            width: 600,
+                                            child: SingleChildScrollView(
+                                              child: SelectableText(
+                                                [
+                                                  ...result.excerpts.map(
+                                                    (e) =>
+                                                        '${e.title} · ${e.page}페이지\n${e.text}',
+                                                  ),
+                                                  ...result.notices,
+                                                  '키워드 기반 관련 발췌입니다. 전체 문서의 완전한 요약을 보장하지 않습니다.',
+                                                ].join('\n\n'),
+                                              ),
+                                            ),
+                                          ),
+                                          actions: [
+                                            TextButton(
+                                              onPressed: () =>
+                                                  Navigator.pop(context),
+                                              child: const Text('닫기'),
+                                            ),
+                                          ],
+                                        ),
+                                      );
+                                    }
+                                  } catch (_) {
+                                    if (mounted) {
+                                      setState(
+                                        () => error = '참고 자료를 읽지 못했습니다.',
+                                      );
+                                    }
+                                  } finally {
+                                    if (mounted) setState(() => busy = false);
+                                  }
+                                },
+                        ),
+                      ),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 8,
+                      ),
+                      child: Wrap(
+                        spacing: 16,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          DropdownButton<AIService>(
+                            value: service,
+                            items: AIService.values
+                                .map(
+                                  (s) => DropdownMenuItem(
+                                    value: s,
+                                    child: Text(s.name),
+                                  ),
+                                )
+                                .toList(),
+                            onChanged: busy
+                                ? null
+                                : (value) {
+                                    if (value != null) {
+                                      setState(() => service = value);
+                                    }
+                                  },
+                          ),
+                          Text(model, overflow: TextOverflow.ellipsis),
+                          TextButton(
+                            onPressed: busy ? null : configure,
+                            child: const Text('키 · 모델 설정'),
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (scoped)
+                      SwitchListTile(
+                        value: includeDocument,
+                        title: Text(
+                          widget.contextLabel ??
+                              (widget.courseId != null
+                                  ? '이 과목 자료에서 근거 찾기'
+                                  : '이 자료 전체에서 근거 찾기'),
+                        ),
+                        subtitle: const Text(
+                          'PDF·텍스트에서 관련 발췌 최대 6개/12,000자만 전송합니다.',
+                        ),
+                        onChanged: busy
+                            ? null
+                            : (value) =>
+                                  setState(() => includeDocument = value),
+                      ),
+                  ],
                 ),
-                Text(model, overflow: TextOverflow.ellipsis),
-                TextButton(
-                  onPressed: busy ? null : configure,
-                  child: const Text('키 · 모델 설정'),
-                ),
-              ],
+              ),
+            )
+          else
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              child: Text(
+                scopeName,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
             ),
-          ),
-          if (widget.contextBuilder != null)
-            SwitchListTile(
-              value: includeDocument,
-              title: const Text('선택한 텍스트 또는 현재 PDF 페이지 포함'),
-              subtitle: const Text('전송 범위: 최대 12,000자 · 선택한 제공자에 전송됩니다.'),
-              onChanged: busy
-                  ? null
-                  : (value) => setState(() => includeDocument = value),
-            ),
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 16),
-            child: Text(
-              '최근 메시지 최대 20개가 API로 전송됩니다. API 과금은 별도이며 답변은 확인이 필요합니다.',
-              style: TextStyle(fontSize: 12),
-            ),
-          ),
-          if (error.isNotEmpty)
-            MaterialBanner(
-              content: Text(error),
-              actions: [
-                TextButton(
-                  onPressed: () => setState(() => error = ''),
-                  child: const Text('닫기'),
-                ),
-              ],
+          if (MediaQuery.viewInsetsOf(context).bottom == 0)
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 16),
+              child: Text(
+                '최근 메시지 최대 20개가 API로 전송됩니다. API 과금은 별도이며 답변은 확인이 필요합니다.',
+                style: TextStyle(fontSize: 12),
+              ),
             ),
           Expanded(
-            child: history.isEmpty && !busy
+            child: history.isEmpty && !busy && error.isEmpty
                 ? const Center(
                     child: Text(
-                      '질문을 입력하세요.\n문서 내용은 위 스위치를 켰을 때만 전송합니다.',
+                      '이 과목이나 자료에 대해 질문하세요.\n참고한 문서와 페이지를 답변 아래에서 다시 열 수 있습니다.',
                       textAlign: TextAlign.center,
                     ),
                   )
                 : ListView(
                     padding: const EdgeInsets.all(16),
+                    controller: messageScroll,
                     children: [
+                      if (error.isNotEmpty)
+                        MaterialBanner(
+                          content: Text(error),
+                          actions: [
+                            TextButton(
+                              onPressed: () => setState(() => error = ''),
+                              child: const Text('닫기'),
+                            ),
+                          ],
+                        ),
+
                       for (final message in history)
                         Padding(
                           padding: const EdgeInsets.only(bottom: 20),
@@ -402,7 +595,8 @@ class _AIChatState extends State<AIChat> {
                                       ),
                                       onPressed: () async {
                                         await w.save('note', {
-                                          'title': 'AI 학습 노트',
+                                          'title': '$scopeName · 학습 노트',
+                                          'courseId': widget.courseId ?? '',
                                           'body': message.text('body'),
                                           'documentId': widget.documentId ?? '',
                                         });
@@ -416,6 +610,45 @@ class _AIChatState extends State<AIChat> {
                                 onTapLink: (_, href, _) =>
                                     openCitation(href, message),
                               ),
+                              if (message.text('role') == 'assistant')
+                                Wrap(
+                                  spacing: 6,
+                                  children: [
+                                    for (final source
+                                        in (message.data['sources'] as List? ??
+                                                [])
+                                            .whereType<Map>())
+                                      ActionChip(
+                                        label: SizedBox(
+                                          width: 220,
+                                          child: Text(
+                                            '${source['title']} · ${source['page']}쪽',
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ),
+                                        onPressed: () => openCitation(
+                                          'fenru://document/${source['documentId']}?page=${source['page']}',
+                                          message,
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                              if ((message.data['contextNotices'] as List? ??
+                                      [])
+                                  .isNotEmpty)
+                                ExpansionTile(
+                                  tilePadding: EdgeInsets.zero,
+                                  title: const Text(
+                                    '참고하지 못한 자료 확인',
+                                    style: TextStyle(fontSize: 12),
+                                  ),
+                                  children: [
+                                    Text(
+                                      (message.data['contextNotices'] as List)
+                                          .join('\n'),
+                                    ),
+                                  ],
+                                ),
                               if (message.text('status') != 'complete')
                                 Text(
                                   message.text('error'),
@@ -432,29 +665,36 @@ class _AIChatState extends State<AIChat> {
                           ),
                         ),
                       if (busy || partial.isNotEmpty) ...[
-                        if (busy) const LinearProgressIndicator(),
+                        if (busy) ...[
+                          const LinearProgressIndicator(),
+                          Padding(
+                            padding: const EdgeInsets.all(8),
+                            child: Text(progress),
+                          ),
+                        ],
                         SelectableText(partial),
                       ],
                     ],
                   ),
           ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Wrap(
-              spacing: 8,
-              children: [
-                for (final prompt in [
-                  '쉽게 설명해 줘',
-                  '핵심 내용을 정리해 줘',
-                  '이 내용으로 퀴즈를 만들어 줘',
-                ])
-                  ActionChip(
-                    label: Text(prompt),
-                    onPressed: busy ? null : () => input.text = prompt,
-                  ),
-              ],
+          if (MediaQuery.viewInsetsOf(context).bottom == 0)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Wrap(
+                spacing: 8,
+                children: [
+                  for (final prompt in [
+                    '쉽게 설명해 줘',
+                    '핵심 내용을 정리해 줘',
+                    '이 내용으로 퀴즈를 만들어 줘',
+                  ])
+                    ActionChip(
+                      label: Text(prompt),
+                      onPressed: busy ? null : () => input.text = prompt,
+                    ),
+                ],
+              ),
             ),
-          ),
           SafeArea(
             child: Padding(
               padding: const EdgeInsets.all(16),
@@ -465,7 +705,7 @@ class _AIChatState extends State<AIChat> {
                     child: TextField(
                       controller: input,
                       minLines: 1,
-                      maxLines: 5,
+                      maxLines: MediaQuery.sizeOf(context).height < 500 ? 2 : 5,
                       enabled: !busy,
                       decoration: const InputDecoration(
                         hintText: '학습 질문을 입력하세요',
