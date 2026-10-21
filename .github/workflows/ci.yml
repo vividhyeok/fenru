@@ -33,8 +33,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
           $vsInstall = & 'C:/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe' -latest -products '*' -property installationPath
-          $redist = Get-ChildItem "$vsInstall/VC/Redist/MSVC" -Directory | Sort-Object Name -Descending | Select-Object -First 1
-          $crt = Get-ChildItem (Join-Path $redist.FullName 'x64') -Directory | Where-Object Name -Match '^Microsoft\.VC.*\.CRT$' | Select-Object -First 1
+          $crt = Get-ChildItem "$vsInstall/VC/Redist/MSVC" -Directory -Recurse | Where-Object { $_.Name -match '^Microsoft\.VC.*\.CRT$' -and $_.Parent.Name -eq 'x64' } | Sort-Object FullName -Descending | Select-Object -First 1
           if (-not $crt) { throw 'Visual C++ redistributable runtime not found' }
           Copy-Item "$($crt.FullName)/*.dll" build/windows/x64/runner/Release/
           Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath dist/Fenru-Windows-x64-portable.zip
@@ -48,8 +47,15 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: windows
-          path: dist/*
+          path: |
+            dist/*.zip
+            dist/*.exe
+            dist/SHA256SUMS-Windows.txt
           if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ui-screenshots
+          path: dist/qa/*.png
       - name: Save generated source and formatting
         if: always()
         uses: actions/upload-artifact@v4

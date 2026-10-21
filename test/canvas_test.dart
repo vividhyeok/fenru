@@ -1,11 +1,83 @@
 import 'dart:convert';
 import 'dart:typed_data';
+import 'dart:io';
 
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:fenru/integrations/canvas.dart';
 
 void main() {
+  test(
+    'download follows HTTPS CDN redirect without leaking Canvas bearer',
+    () async {
+      final root = await Directory.systemTemp.createTemp('fenru-cdn-test-');
+      final requests = <RequestOptions>[];
+      final dio = Dio()
+        ..httpClientAdapter = _Adapter((request) {
+          requests.add(request);
+          if (request.uri.host == 'school.edu') {
+            return ResponseBody.fromString(
+              '',
+              302,
+              headers: {
+                'location': ['https://cdn.example/asset.pdf'],
+              },
+            );
+          }
+          return ResponseBody.fromString(
+            'PDF bytes',
+            200,
+            headers: {
+              'content-length': ['9'],
+            },
+          );
+        });
+      final provider = CanvasProvider(
+        'https://school.edu',
+        'test-bearer',
+        client: dio,
+      );
+      try {
+        await provider.downloadFile(
+          Uri.parse('https://school.edu/file/1'),
+          '${root.path}/file.bin',
+        );
+        expect(requests.first.headers['Authorization'], 'Bearer test-bearer');
+        expect(requests.last.headers.containsKey('Authorization'), isFalse);
+        expect(await File('${root.path}/file.bin').readAsString(), 'PDF bytes');
+        expect(requests.length, 2);
+      } finally {
+        await root.delete(recursive: true);
+      }
+    },
+  );
+  test('download rejects plaintext redirect destination', () async {
+    final root = await Directory.systemTemp.createTemp('fenru-cdn-deny-');
+    int count = 0;
+    final dio = Dio()
+      ..httpClientAdapter = _Adapter((request) {
+        count++;
+        return ResponseBody.fromString(
+          '',
+          302,
+          headers: {
+            'location': ['http://unsafe.example/file'],
+          },
+        );
+      });
+    try {
+      await expectLater(
+        CanvasProvider('https://school.edu', 'test', client: dio).downloadFile(
+          Uri.parse('https://school.edu/file'),
+          '${root.path}/file',
+        ),
+        throwsException,
+      );
+      expect(count, 1);
+    } finally {
+      await root.delete(recursive: true);
+    }
+  });
   test('rejects credential URLs, plaintext and path URLs', () {
     for (final url in [
       'http://school.edu',

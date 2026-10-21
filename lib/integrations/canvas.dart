@@ -87,6 +87,39 @@ class CanvasProvider implements LmsProvider {
     return result;
   }
 
+  Future<void> downloadFile(Uri initial, String destination) async {
+    var current = initial;
+    final visited = <String>{};
+    for (int hop = 0; hop < 6; hop++) {
+      if (current.scheme != 'https' ||
+          current.userInfo.isNotEmpty ||
+          !visited.add(current.toString())) {
+        throw const UserFacingException('안전하지 않거나 반복되는 파일 다운로드 경로입니다.');
+      }
+      final response = await http.downloadUri(
+        current,
+        destination,
+        options: Options(
+          headers: current.origin == base.origin
+              ? {'Authorization': 'Bearer $token'}
+              : {},
+          followRedirects: false,
+          validateStatus: (status) =>
+              status != null &&
+              (status >= 200 && status < 300 ||
+                  [301, 302, 303, 307, 308].contains(status)),
+        ),
+      );
+      if ((response.statusCode ?? 0) < 300) return;
+      final location = response.headers.value('location');
+      if (location == null) {
+        throw const UserFacingException('Canvas 파일의 다음 다운로드 주소가 없습니다.');
+      }
+      current = current.resolve(location);
+    }
+    throw const UserFacingException('파일 다운로드 경로가 너무 많이 변경되었습니다. 다시 시도하세요.');
+  }
+
   Future<void> importCourse(
     Workspace workspace,
     Json course,
@@ -127,19 +160,20 @@ class CanvasProvider implements LmsProvider {
       }
       final tempDir = await Directory.systemTemp.createTemp('fenru-canvas-');
       try {
-        await http.downloadUri(
-          url,
-          p.join(tempDir.path, name),
-          options: Options(
-            headers: url.origin == base.origin
-                ? {'Authorization': 'Bearer $token'}
-                : {},
-            followRedirects: false,
-          ),
-        );
+        final transfer = p.join(tempDir.path, 'transfer.bin');
+        await downloadFile(url, transfer);
+        final expectedSize = file['size'];
+        if (expectedSize is int &&
+            expectedSize >= 0 &&
+            await File(transfer).length() != expectedSize) {
+          throw const UserFacingException(
+            'Canvas 파일 크기가 원본 정보와 다릅니다. 가져오기를 중단했습니다.',
+          );
+        }
         final imported = await workspace.importFile(
-          p.join(tempDir.path, name),
+          transfer,
           folder: local.title,
+          displayName: name,
           origin: {'source': sourceKey, 'id': externalId, 'updated': modified},
         );
         if (previous.isNotEmpty) {

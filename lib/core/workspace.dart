@@ -153,6 +153,7 @@ class Workspace extends ChangeNotifier {
     String source, {
     String? folder,
     Json? origin,
+    String? displayName,
   }) async {
     final file = File(source);
     final size = await file.length();
@@ -161,7 +162,11 @@ class Workspace extends ChangeNotifier {
       if (existing.text('hash') == digest && origin == null) return existing;
     }
     final id = uuid.v4();
-    final extension = p.extension(source).toLowerCase();
+    final name = p.basename(displayName ?? source);
+    final rawExtension = p.extension(name).toLowerCase();
+    final extension = RegExp(r'^\.[a-z0-9]{1,16}$').hasMatch(rawExtension)
+        ? rawExtension
+        : '';
     final relative = p.join('files', '$id$extension');
     final destination = File(p.join(root.path, relative));
     final temporary = File('${destination.path}.part');
@@ -177,8 +182,8 @@ class Workspace extends ChangeNotifier {
       extracted = await destination.readAsString().catchError((_) => '');
     }
     return save('document', {
-      'title': p.basename(source),
-      'originalName': p.basename(source),
+      'title': name,
+      'originalName': name,
       'file': relative,
       'hash': digest,
       'size': size,

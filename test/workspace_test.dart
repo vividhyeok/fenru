@@ -20,6 +20,35 @@ void main() {
     await w.close();
     await temp.delete(recursive: true);
   });
+  test('Windows workspace lock rejects a second process handle', () async {
+    final file = File('${temp.path}/.lock');
+    final first = await file.open(mode: FileMode.append);
+    final second = await file.open(mode: FileMode.append);
+    try {
+      await first.lock(FileLock.exclusive);
+      await expectLater(
+        second.lock(FileLock.exclusive),
+        throwsA(isA<FileSystemException>()),
+      );
+    } finally {
+      await second.close();
+      await first.close();
+    }
+  }, skip: !Platform.isWindows);
+  test(
+    'remote display names never become filesystem paths or NTFS streams',
+    () async {
+      final source = File('${temp.path}/transfer.bin');
+      await source.writeAsString('content');
+      final doc = await w.importFile(
+        source.path,
+        displayName: 'Week 1: Lecture.pdf:stream',
+      );
+      expect(doc.title, 'Week 1: Lecture.pdf:stream');
+      expect(doc.text('file'), isNot(contains(':')));
+      expect(await w.fileFor(doc).exists(), isTrue);
+    },
+  );
   test('JSON key order does not create a false conflict', () async {
     final note = await w.save('note', {'title': 'same', 'body': 'same'});
     final clone = WorkspaceObject.fromJson({

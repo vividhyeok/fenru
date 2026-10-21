@@ -1,6 +1,6 @@
 # 빌드와 릴리스
 
-GitHub Actions Verify and build는 main/PR에서 Windows 분석·테스트·release 빌드 후 Android release APK를 검증합니다. tools/bootstrap.py가 고정 Flutter SDK에서 플랫폼 러너를 생성합니다. source-verified artifact로 생성 러너·lockfile·format 결과를 보관합니다.
+GitHub Actions Verify and build는 main/PR에서 포맷·Windows 분석·unit/widget·Windows 문서 통합 테스트·release 빌드 후 Android release APK와 에뮬레이터 문서 통합 테스트를 검증합니다. Linux 에뮬레이터에는 KVM 권한을 준비합니다. tools/bootstrap.py가 고정 Flutter SDK에서 플랫폼 러너를 생성하며 기존 러너는 보존합니다. source-verified artifact로 러너·lockfile을 보관합니다. 테스트 화면은 ui-screenshots artifact로 분리하여 릴리스 파일에 폴더가 섞이지 않게 합니다.
 
 v* 태그에서 두 플랫폼 검증이 모두 성공하면 GITHUB_TOKEN(contents:write)으로 개발 prerelease를 생성합니다. Windows portable ZIP, Android test-signed APK, SHA256 체크섬을 업로드합니다. 실패한 빌드를 정식 릴리스로 생성하지 않습니다.
 

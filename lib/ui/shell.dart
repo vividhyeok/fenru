@@ -942,7 +942,7 @@ class _FenruShellState extends State<FenruShell> {
       ),
       const SizedBox(height: 20),
       const Text(
-        'Fenru 0.1.0-alpha.1 · 개발 프리릴리스\n로컬 데이터는 자동 저장됩니다. 별도 계정이나 추적 SDK를 사용하지 않습니다.',
+        'Fenru 0.1.0-alpha.2 · 개발 프리릴리스\n로컬 데이터는 자동 저장됩니다. 별도 계정이나 추적 SDK를 사용하지 않습니다.',
       ),
     ],
   );
