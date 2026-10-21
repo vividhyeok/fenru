@@ -730,6 +730,11 @@ class _FenruShellState extends State<FenruShell> {
     return ListView(
       padding: const EdgeInsets.all(24),
       children: [
+        Text(
+          '과목 · Canvas 자료',
+          style: Theme.of(context).textTheme.headlineSmall,
+        ),
+        const SizedBox(height: 16),
         Align(
           alignment: Alignment.centerLeft,
           child: FilledButton.icon(

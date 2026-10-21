@@ -10,6 +10,18 @@ import '../../core/workspace.dart';
 
 enum MergeOrder { equal, localNewer, remoteNewer, concurrent }
 
+Object? _canonical(Object? value) {
+  if (value is Map) {
+    final entries = value.entries.toList()
+      ..sort((a, b) => '${a.key}'.compareTo('${b.key}'));
+    return {
+      for (final entry in entries) '${entry.key}': _canonical(entry.value),
+    };
+  }
+  if (value is List) return value.map(_canonical).toList();
+  return value;
+}
+
 MergeOrder compareClocks(WorkspaceObject local, WorkspaceObject remote) {
   final a = Map<String, dynamic>.from(local.data['_clock'] as Map? ?? {});
   final b = Map<String, dynamic>.from(remote.data['_clock'] as Map? ?? {});
@@ -22,7 +34,8 @@ MergeOrder compareClocks(WorkspaceObject local, WorkspaceObject remote) {
   if (greater && less) return MergeOrder.concurrent;
   if (greater) return MergeOrder.localNewer;
   if (less) return MergeOrder.remoteNewer;
-  return jsonEncode(local.toJson()) == jsonEncode(remote.toJson())
+  return jsonEncode(_canonical(local.toJson())) ==
+          jsonEncode(_canonical(remote.toJson()))
       ? MergeOrder.equal
       : MergeOrder.concurrent;
 }
@@ -144,9 +157,10 @@ class BackupService {
         if (order == MergeOrder.remoteNewer) {
           await workspace.writeObject(remote);
         } else if (order == MergeOrder.concurrent) {
-          final conflictId = sha256
-              .convert(utf8.encode(jsonEncode(remote.toJson())))
-              .toString();
+          final canonicalRemote = utf8.encode(
+            jsonEncode(_canonical(remote.toJson())),
+          );
+          final conflictId = sha256.convert(canonicalRemote).toString();
           if (workspace.byId(conflictId) == null) {
             conflicts++;
             await workspace.writeObject(

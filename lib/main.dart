@@ -8,6 +8,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:go_router/go_router.dart';
 
 import 'core/database.dart';
+import 'core/models.dart';
 import 'core/workspace.dart';
 import 'ui/theme.dart';
 import 'ui/onboarding.dart';
@@ -18,13 +19,28 @@ final workspaceProvider = Provider<Workspace>(
 );
 Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+  RandomAccessFile? guard;
   try {
     final support = await getApplicationSupportDirectory();
     final root = Directory(p.join(support.path, 'workspace'));
     await root.create(recursive: true);
+    if (Platform.isWindows) {
+      guard = await File(p.join(root.path, '.fenru.lock'))
+          .open(mode: FileMode.append);
+      try {
+        await guard.lock(FileLock.exclusive);
+      } on FileSystemException {
+        await guard.close();
+        guard = null;
+        throw const UserFacingException(
+          '같은 작업 공간의 Fenru가 이미 실행 중입니다. 기존 창을 사용하거나 닫은 뒤 다시 실행하세요.',
+        );
+      }
+    }
     final workspace = Workspace(
       root,
       WorkspaceDatabase(File(p.join(root.path, 'fenru.sqlite'))),
+      guard: guard,
     );
     await workspace.initialize();
     runApp(
@@ -33,16 +49,17 @@ Future<void> main(List<String> args) async {
         child: FenruApp(workspace: workspace),
       ),
     );
-  } catch (_) {
+  } catch (error) {
+    await guard?.close();
     runApp(
       MaterialApp(
         theme: FenruTheme.build(Brightness.light),
-        home: const Scaffold(
+        home: Scaffold(
           body: Center(
             child: Padding(
-              padding: EdgeInsets.all(32),
+              padding: const EdgeInsets.all(32),
               child: SelectableText(
-                'Fenru를 시작하지 못했습니다.\n저장 공간과 폴더 접근 권한을 확인한 뒤 다시 실행하세요.\n기존 데이터는 삭제되지 않았습니다.',
+                error is UserFacingException ? error.message : 'Fenru를 시작하지 못했습니다.\n저장 공간과 폴더 접근 권한을 확인한 뒤 다시 실행하세요.\n기존 데이터는 삭제되지 않았습니다.',
               ),
             ),
           ),

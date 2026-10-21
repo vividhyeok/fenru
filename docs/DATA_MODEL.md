@@ -1,6 +1,8 @@
 # 데이터 모델 v1
 
-objects: id(UUID 또는 결정적 충돌 해시), kind(document/note/annotation/course/task), payload(JSON), revision, device, updated(UTC), deleted(tombstone).
+objects: id(UUID 또는 결정적 충돌 해시), kind(document/note/annotation/course/task/chat/message), payload(JSON), revision, device, updated(UTC), deleted(tombstone).
+
+chat은 documentId와 제목, message는 sessionId/role/body/provider/model/status/sources/선택적 inputTokens/outputTokens를 저장합니다. 키는 객체에 저장하지 않습니다. 출처에는 문서 ID·페이지·버전 해시를 보관합니다. annotation의 rectangles는 PDF 좌표이며 원본을 변경하지 않습니다.
 
 공통 payload의 _clock은 device → counter 벡터 시계입니다. title은 표시 이름입니다. document는 file(작업 공간 상대 경로), hash(SHA256), size, extension, originalName, folder, tags, page, lastRead, origin(선택적 Canvas 원본 ID), previousVersion을 가집니다. note는 body와 documentId를 가집니다. annotation은 documentId/page/type/body를 가집니다. task는 due/done/course/source/url을 가집니다.
 

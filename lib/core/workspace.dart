@@ -12,7 +12,9 @@ import 'database.dart';
 import 'models.dart';
 
 class Workspace extends ChangeNotifier {
-  Workspace(this.root, this.db);
+  Workspace(this.root, this.db, {this.guard});
+  final RandomAccessFile? guard;
+  Future<void> _writes = Future.value();
   final Directory root;
   final WorkspaceDatabase db;
   final uuid = const Uuid();
@@ -61,6 +63,23 @@ class Workspace extends ChangeNotifier {
   }
 
   Future<WorkspaceObject> save(
+    String kind,
+    Json data, {
+    String? id,
+    bool deleted = false,
+  }) {
+    final result = Completer<WorkspaceObject>();
+    _writes = _writes.then((_) async {
+      try {
+        result.complete(await _save(kind, data, id: id, deleted: deleted));
+      } catch (error, stack) {
+        result.completeError(error, stack);
+      }
+    });
+    return result.future;
+  }
+
+  Future<WorkspaceObject> _save(
     String kind,
     Json data, {
     String? id,
@@ -209,7 +228,9 @@ class Workspace extends ChangeNotifier {
   }
 
   Future<void> close() async {
+    await _writes;
     await db.close();
+    await guard?.close();
     dispose();
   }
 }

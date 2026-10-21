@@ -5,6 +5,7 @@ import 'package:archive/archive.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:fenru/core/database.dart';
 import 'package:fenru/core/workspace.dart';
+import 'package:fenru/core/models.dart';
 import 'package:fenru/features/backup/backup_service.dart';
 
 void main() {
@@ -18,6 +19,28 @@ void main() {
   tearDown(() async {
     await w.close();
     await temp.delete(recursive: true);
+  });
+  test('JSON key order does not create a false conflict', () async {
+    final note = await w.save('note', {'title': 'same', 'body': 'same'});
+    final clone = WorkspaceObject.fromJson({
+      ...note.toJson(),
+      'data': Map<String, dynamic>.fromEntries(
+        note.data.entries.toList().reversed,
+      ),
+    });
+    expect(compareClocks(note, clone), MergeOrder.equal);
+  });
+  test('concurrent writes keep distinct monotonic revisions', () async {
+    final note = await w.save('note', {'title': 'serial', 'body': 'initial'});
+    final writes = await Future.wait(
+      List.generate(
+        8,
+        (i) => w.save('note', {'title': 'serial', 'body': '$i'}, id: note.id),
+      ),
+    );
+    expect(writes.map((o) => o.revision).toSet().length, 8);
+    expect(w.byId(note.id)!.revision, 9);
+    expect(w.byId(note.id)!.data['_clock'][w.device], 9);
   });
   test(
     'note saves, searches and restores from trash without changing ID',

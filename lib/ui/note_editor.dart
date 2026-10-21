@@ -14,13 +14,24 @@ class NoteEditor extends StatefulWidget {
   State<NoteEditor> createState() => _NoteEditorState();
 }
 
-class _NoteEditorState extends State<NoteEditor> {
+class _NoteEditorState extends State<NoteEditor> with WidgetsBindingObserver {
   late final title = TextEditingController(text: widget.note.title);
   late final body = TextEditingController(text: widget.note.text('body'));
   Timer? timer;
   bool dirty = false, preview = false, saving = false;
   String status = '저장됨';
   Future<void> pending = Future.value();
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed && dirty) save();
+  }
+
   void changed() {
     timer?.cancel();
     setState(() {
@@ -67,6 +78,7 @@ class _NoteEditorState extends State<NoteEditor> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     timer?.cancel();
     title.dispose();
     body.dispose();

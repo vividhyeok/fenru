@@ -19,6 +19,8 @@
 
 모든 패키지는 소스 복사 대신 pub 의존성으로 사용합니다. 고정 버전과 전이 의존성 lockfile을 유지하며 라이선스 화면을 앱 설정에서 제공합니다. PDFium 제3자 고지와 플랫폼 DLL 배포 포함 여부는 패키징 검증이 필요합니다.
 
+Windows 배포에는 앱 로컬 Visual C++ CRT DLL을 추가합니다. 이는 오픈소스 패키지가 아니며 Microsoft 재배포 조건이 적용됩니다. 빌드 러너의 공식 Visual Studio redistributable 디렉터리에서 가져옵니다. https://learn.microsoft.com/cpp/windows/redistributing-visual-cpp-files
+
 ## 조사 후보
 
 | 저장소 | 확인된 라이선스 | 최근 push | 코드 직접 사용 | 판단/대안 |
