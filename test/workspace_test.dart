@@ -1,4 +1,7 @@
 import 'dart:io';
+import 'dart:convert';
+
+import 'package:archive/archive.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:fenru/core/database.dart';
 import 'package:fenru/core/workspace.dart';
@@ -12,16 +15,25 @@ void main() {
     w = Workspace(temp, WorkspaceDatabase.memory());
     await w.initialize();
   });
-  tearDown(() async { await w.close(); await temp.delete(recursive: true); });
-  test('note saves, searches and restores from trash without changing ID', () async {
-    final note = await w.save('note', {'title': '선형대수', 'body': '고유값 eigenvalue'});
-    expect((await w.search('eigenvalue')).single.id, note.id);
-    await w.trash(note);
-    expect(w.ofKind('note'), isEmpty);
-    expect(await w.search('eigenvalue'), isEmpty);
-    await w.restore(w.byId(note.id)!);
-    expect(w.ofKind('note').single.id, note.id);
+  tearDown(() async {
+    await w.close();
+    await temp.delete(recursive: true);
   });
+  test(
+    'note saves, searches and restores from trash without changing ID',
+    () async {
+      final note = await w.save('note', {
+        'title': '선형대수',
+        'body': '고유값 eigenvalue',
+      });
+      expect((await w.search('eigenvalue')).single.id, note.id);
+      await w.trash(note);
+      expect(w.ofKind('note'), isEmpty);
+      expect(await w.search('eigenvalue'), isEmpty);
+      await w.restore(w.byId(note.id)!);
+      expect(w.ofKind('note').single.id, note.id);
+    },
+  );
   test('import copies bytes, deduplicates and keeps progress', () async {
     final source = File('${temp.path}/original.txt');
     await source.writeAsString('original content');
@@ -34,34 +46,102 @@ void main() {
     expect(w.byId(doc.id)!.number('page'), 7);
     expect(await source.readAsString(), 'original content');
   });
-  test('backup restores data and preserves concurrent edits idempotently', () async {
-    final note = await w.save('note', {'title': 'A', 'body': 'initial'});
-    final backup = '${temp.path}/backup.zip';
-    await BackupService(w).exportTo(backup);
-    final otherRoot = await Directory.systemTemp.createTemp('fenru-other-');
-    final other = Workspace(otherRoot, WorkspaceDatabase.memory());
-    try {
-      await other.initialize();
-      expect(await BackupService(other).restoreFrom(backup), 0);
-      await other.save('note', {'title': 'A', 'body': 'other edit'}, id: note.id);
-      await w.save('note', {'title': 'A', 'body': 'local edit'}, id: note.id);
-      final remoteBackup = '${temp.path}/remote.zip';
-      await BackupService(other).exportTo(remoteBackup);
-      expect(await BackupService(w).restoreFrom(remoteBackup), 1);
-      expect(w.byId(note.id)!.text('body'), 'local edit');
-      expect(w.ofKind('note').any((n) => n.text('body') == 'other edit'), isTrue);
-      expect(await BackupService(w).restoreFrom(remoteBackup), 0);
-    } finally { await other.close(); await otherRoot.delete(recursive: true); }
-  });
+  test(
+    'backup restores data and preserves concurrent edits idempotently',
+    () async {
+      final note = await w.save('note', {'title': 'A', 'body': 'initial'});
+      final backup = '${temp.path}/backup.zip';
+      await BackupService(w).exportTo(backup);
+      final otherRoot = await Directory.systemTemp.createTemp('fenru-other-');
+      final other = Workspace(otherRoot, WorkspaceDatabase.memory());
+      try {
+        await other.initialize();
+        expect(await BackupService(other).restoreFrom(backup), 0);
+        await other.save('note', {
+          'title': 'A',
+          'body': 'other edit',
+        }, id: note.id);
+        await w.save('note', {'title': 'A', 'body': 'local edit'}, id: note.id);
+        final remoteBackup = '${temp.path}/remote.zip';
+        await BackupService(other).exportTo(remoteBackup);
+        expect(await BackupService(w).restoreFrom(remoteBackup), 1);
+        expect(w.byId(note.id)!.text('body'), 'local edit');
+        expect(
+          w.ofKind('note').any((n) => n.text('body') == 'other edit'),
+          isTrue,
+        );
+        expect(await BackupService(w).restoreFrom(remoteBackup), 0);
+      } finally {
+        await other.close();
+        await otherRoot.delete(recursive: true);
+      }
+    },
+  );
   test('file database survives close and reopen', () async {
     final file = File('${temp.path}/persistent.sqlite');
     final first = Workspace(temp, WorkspaceDatabase(file));
     await first.initialize();
-    final n = await first.save('note', {'title': 'persistent', 'body': 'do not lose'});
+    final n = await first.save('note', {
+      'title': 'persistent',
+      'body': 'do not lose',
+    });
     await first.close();
     final second = Workspace(temp, WorkspaceDatabase(file));
     await second.initialize();
     expect(second.byId(n.id)!.text('body'), 'do not lose');
     await second.close();
   });
+  test('malicious ZIP path is rejected before touching database', () async {
+    final archive = Archive()
+      ..addFile(ArchiveFile('../escape.txt', 3, [1, 2, 3]));
+    final zip = File('${temp.path}/malicious.zip');
+    await zip.writeAsBytes(ZipEncoder().encode(archive));
+    await expectLater(BackupService(w).restoreFrom(zip.path), throwsException);
+    expect(w.objects, isEmpty);
+  });
+  test('backup excludes credentials and preferences', () async {
+    await w.setPreference('exampleSecret', 'do-not-export');
+    await w.save('note', {'title': 'safe', 'body': 'learning'});
+    final path = '${temp.path}/safe.zip';
+    await BackupService(w).exportTo(path);
+    final archive = ZipDecoder().decodeBytes(await File(path).readAsBytes());
+    final manifest = utf8.decode(archive.findFile('manifest.json')!.content);
+    expect(manifest, isNot(contains('do-not-export')));
+    expect(manifest, isNot(contains('preferences')));
+  });
+  test(
+    'corrupt document hash aborts restore without inserting objects',
+    () async {
+      final source = File('${temp.path}/source.txt');
+      await source.writeAsString('good');
+      await w.importFile(source.path);
+      final backup = '${temp.path}/good.zip';
+      await BackupService(w).exportTo(backup);
+      final decoded = ZipDecoder().decodeBytes(
+        await File(backup).readAsBytes(),
+      );
+      final corrupted = Archive();
+      for (final entry in decoded) {
+        final bytes = entry.name.startsWith('files/')
+            ? utf8.encode('bad')
+            : entry.content;
+        corrupted.addFile(ArchiveFile(entry.name, bytes.length, bytes));
+      }
+      final bad = '${temp.path}/bad.zip';
+      await File(bad).writeAsBytes(ZipEncoder().encode(corrupted));
+      final otherRoot = await Directory.systemTemp.createTemp('fenru-corrupt-');
+      final other = Workspace(otherRoot, WorkspaceDatabase.memory());
+      try {
+        await other.initialize();
+        await expectLater(
+          BackupService(other).restoreFrom(bad),
+          throwsException,
+        );
+        expect(other.objects, isEmpty);
+      } finally {
+        await other.close();
+        await otherRoot.delete(recursive: true);
+      }
+    },
+  );
 }

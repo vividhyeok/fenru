@@ -5,6 +5,9 @@ import subprocess
 import tempfile
 
 root = Path(__file__).resolve().parent.parent
+if (root / 'android/app/src/main/AndroidManifest.xml').exists() and (root / 'windows/runner/main.cpp').exists():
+    print('Existing platform runners preserved.')
+    raise SystemExit(0)
 with tempfile.TemporaryDirectory() as temporary:
     saved = Path(temporary)
     for name in ('lib', 'test', 'pubspec.yaml', 'analysis_options.yaml', '.gitignore', 'README.md'):

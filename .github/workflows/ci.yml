@@ -19,7 +19,7 @@ jobs:
           cache: true
       - run: python tools/bootstrap.py
       - run: flutter pub get
-      - run: dart format lib test integration_test
+      - run: dart format --output=none --set-exit-if-changed lib test integration_test
       - name: Static analysis
         run: flutter analyze --no-pub
       - name: Unit and widget tests
@@ -32,6 +32,12 @@ jobs:
           New-Item -ItemType Directory -Force dist | Out-Null
           Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath dist/Fenru-Windows-x64-portable.zip
           Get-FileHash dist/Fenru-Windows-x64-portable.zip -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  Fenru-Windows-x64-portable.zip" } | Set-Content dist/SHA256SUMS-Windows.txt
+      - name: Build Windows installer
+        shell: pwsh
+        run: |
+          & 'C:/Program Files (x86)/Inno Setup 6/ISCC.exe' tools/fenru.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-FileHash dist/Fenru-Windows-x64-Setup.exe -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  Fenru-Windows-x64-Setup.exe" } | Add-Content dist/SHA256SUMS-Windows.txt
       - uses: actions/upload-artifact@v4
         with:
           name: windows

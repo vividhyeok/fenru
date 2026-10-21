@@ -1,4 +1,5 @@
 import 'dart:io';
+
 import 'package:drift/drift.dart';
 import 'package:drift/native.dart';
 
@@ -22,12 +23,16 @@ class WorkspaceDatabase extends GeneratedDatabase {
         revision INTEGER NOT NULL, device TEXT NOT NULL,
         updated TEXT NOT NULL, deleted INTEGER NOT NULL DEFAULT 0
       )''');
-      await customStatement('CREATE INDEX objects_kind ON objects(kind, deleted, updated)');
+      await customStatement(
+        'CREATE INDEX objects_kind ON objects(kind, deleted, updated)',
+      );
       await customStatement('''CREATE TABLE outbox (
         id TEXT PRIMARY KEY, revision INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
         next_attempt TEXT, error TEXT
       )''');
-      await customStatement('CREATE TABLE preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+      await customStatement(
+        'CREATE TABLE preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL)',
+      );
       await customStatement('''CREATE VIRTUAL TABLE search_index USING fts5(
         id UNINDEXED, title, body, tokenize='unicode61'
       )''');

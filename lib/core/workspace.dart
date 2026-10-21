@@ -1,11 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+
 import 'package:crypto/crypto.dart';
 import 'package:drift/drift.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:uuid/uuid.dart';
+
 import 'database.dart';
 import 'models.dart';
 
@@ -22,53 +24,101 @@ class Workspace extends ChangeNotifier {
   Future<void> initialize() async {
     await Directory(p.join(root.path, 'files')).create(recursive: true);
     final rows = await db.customSelect('SELECT * FROM preferences').get();
-    preferences = {for (final r in rows) r.read<String>('key'): r.read<String>('value')};
+    preferences = {
+      for (final r in rows) r.read<String>('key'): r.read<String>('value'),
+    };
     device = preferences['device'] ?? uuid.v4();
     await setPreference('device', device);
     await reload();
   }
 
   Future<void> reload() async {
-    objects = (await db.customSelect('SELECT * FROM objects ORDER BY updated DESC').get())
-      .map((r) => WorkspaceObject.fromRow(r.data)).toList();
+    objects =
+        (await db
+                .customSelect('SELECT * FROM objects ORDER BY updated DESC')
+                .get())
+            .map((r) => WorkspaceObject.fromRow(r.data))
+            .toList();
     notifyListeners();
   }
+
   List<WorkspaceObject> ofKind(String kind, {bool trash = false}) =>
-    objects.where((o) => o.kind == kind && o.deleted == trash).toList();
+      objects.where((o) => o.kind == kind && o.deleted == trash).toList();
   WorkspaceObject? byId(String? id) {
-    for (final o in objects) { if (o.id == id) return o; }
+    for (final o in objects) {
+      if (o.id == id) return o;
+    }
     return null;
   }
+
   Future<void> setPreference(String key, String value) async {
-    await db.customStatement('INSERT OR REPLACE INTO preferences VALUES (?,?)', [key, value]);
+    await db.customStatement(
+      'INSERT OR REPLACE INTO preferences VALUES (?,?)',
+      [key, value],
+    );
     preferences[key] = value;
     notifyListeners();
   }
-  Future<WorkspaceObject> save(String kind, Json data, {String? id, bool deleted = false}) async {
+
+  Future<WorkspaceObject> save(
+    String kind,
+    Json data, {
+    String? id,
+    bool deleted = false,
+  }) async {
     final previous = byId(id);
-    final clock = Map<String, dynamic>.from(previous?.data['_clock'] as Map? ?? {});
+    final clock = Map<String, dynamic>.from(
+      previous?.data['_clock'] as Map? ?? {},
+    );
     clock[device] = (clock[device] as int? ?? 0) + 1;
-    final object = WorkspaceObject(id: id ?? uuid.v4(), kind: kind, data: {...data, '_clock': clock},
-      revision: (previous?.revision ?? 0) + 1, device: device,
-      updated: DateTime.now().toUtc(), deleted: deleted);
+    final object = WorkspaceObject(
+      id: id ?? uuid.v4(),
+      kind: kind,
+      data: {...data, '_clock': clock},
+      revision: (previous?.revision ?? 0) + 1,
+      device: device,
+      updated: DateTime.now().toUtc(),
+      deleted: deleted,
+    );
     await db.transaction(() async {
       await writeObject(object);
-      await db.customStatement('INSERT OR REPLACE INTO outbox(id,revision) VALUES (?,?)',
-        [object.id, object.revision]);
+      await db.customStatement(
+        'INSERT OR REPLACE INTO outbox(id,revision) VALUES (?,?)',
+        [object.id, object.revision],
+      );
     });
     await reload();
     return object;
   }
+
   Future<void> writeObject(WorkspaceObject o) async {
-    await db.customStatement('INSERT OR REPLACE INTO objects VALUES (?,?,?,?,?,?,?)',
-      [o.id, o.kind, jsonEncode(o.data), o.revision, o.device, o.updated.toIso8601String(), o.deleted ? 1 : 0]);
+    await db.customStatement(
+      'INSERT OR REPLACE INTO objects VALUES (?,?,?,?,?,?,?)',
+      [
+        o.id,
+        o.kind,
+        jsonEncode(o.data),
+        o.revision,
+        o.device,
+        o.updated.toIso8601String(),
+        o.deleted ? 1 : 0,
+      ],
+    );
     await db.customStatement('DELETE FROM search_index WHERE id=?', [o.id]);
     if (!o.deleted) {
-      await db.customStatement('INSERT INTO search_index(id,title,body) VALUES (?,?,?)',
-        [o.id, o.title, '${o.text('body')} ${o.text('tags')} ${o.text('folder')} ${o.text('extracted')}']);
+      await db.customStatement(
+        'INSERT INTO search_index(id,title,body) VALUES (?,?,?)',
+        [
+          o.id,
+          o.title,
+          '${o.text('body')} ${o.text('tags')} ${o.text('folder')} ${o.text('extracted')}',
+        ],
+      );
     }
   }
-  Future<void> trash(WorkspaceObject o) => save(o.kind, o.data, id: o.id, deleted: true);
+
+  Future<void> trash(WorkspaceObject o) =>
+      save(o.kind, o.data, id: o.id, deleted: true);
   Future<void> restore(WorkspaceObject o) => save(o.kind, o.data, id: o.id);
 
   File fileFor(WorkspaceObject doc) {
@@ -80,7 +130,11 @@ class Workspace extends ChangeNotifier {
     return File(full);
   }
 
-  Future<WorkspaceObject> importFile(String source, {String? folder, Json? origin}) async {
+  Future<WorkspaceObject> importFile(
+    String source, {
+    String? folder,
+    Json? origin,
+  }) async {
     final file = File(source);
     final size = await file.length();
     final digest = (await sha256.bind(file.openRead()).first).toString();
@@ -99,33 +153,63 @@ class Workspace extends ChangeNotifier {
     }
     await temporary.rename(destination.path);
     String extracted = '';
-    if (['.txt', '.md', '.markdown', '.html', '.csv'].contains(extension) && size < 10 * 1024 * 1024) {
+    if (['.txt', '.md', '.markdown', '.html', '.csv'].contains(extension) &&
+        size < 10 * 1024 * 1024) {
       extracted = await destination.readAsString().catchError((_) => '');
     }
-    return save('document', {'title': p.basename(source), 'originalName': p.basename(source),
-      'file': relative, 'hash': digest, 'size': size, 'extension': extension,
-      'folder': folder ?? '', 'tags': '', 'page': 1, 'extracted': extracted,
-      if (origin != null) 'origin': origin}, id: id);
+    return save('document', {
+      'title': p.basename(source),
+      'originalName': p.basename(source),
+      'file': relative,
+      'hash': digest,
+      'size': size,
+      'extension': extension,
+      'folder': folder ?? '',
+      'tags': '',
+      'page': 1,
+      'extracted': extracted,
+      'origin': ?origin,
+    }, id: id);
   }
 
   Future<List<WorkspaceObject>> search(String query) async {
     if (query.trim().isEmpty) return objects.where((o) => !o.deleted).toList();
     final words = query.trim().split(RegExp(r'\s+'));
-    final expression = words.map((w) => '"${w.replaceAll('"', '""')}"*').join(' AND ');
-    final rows = await db.customSelect('SELECT id FROM search_index WHERE search_index MATCH ? ORDER BY rank LIMIT 100',
-      variables: [Variable.withString(expression)]).get();
+    final expression = words
+        .map((w) => '"${w.replaceAll('"', '""')}"*')
+        .join(' AND ');
+    final rows = await db
+        .customSelect(
+          'SELECT id FROM search_index WHERE search_index MATCH ? ORDER BY rank LIMIT 100',
+          variables: [Variable.withString(expression)],
+        )
+        .get();
     final ids = rows.map((r) => r.read<String>('id')).toSet();
     final lowered = query.toLowerCase();
-    return objects.where((o) => !o.deleted && (ids.contains(o.id) ||
-      '${o.title} ${o.text('tags')} ${o.text('body')}'.toLowerCase().contains(lowered))).toList();
+    return objects
+        .where(
+          (o) =>
+              !o.deleted &&
+              (ids.contains(o.id) ||
+                  '${o.title} ${o.text('tags')} ${o.text('body')}'
+                      .toLowerCase()
+                      .contains(lowered)),
+        )
+        .toList();
   }
 
   Future<void> recordPage(WorkspaceObject doc, int page) async {
     final current = byId(doc.id);
     if (current == null || current.deleted) return;
-    await save('document', {...current.data, 'page': page,
-      'lastRead': DateTime.now().toUtc().toIso8601String()}, id: doc.id);
+    await save('document', {
+      ...current.data,
+      'page': page,
+      'lastRead': DateTime.now().toUtc().toIso8601String(),
+    }, id: doc.id);
   }
 
-  Future<void> close() async { await db.close(); dispose(); }
+  Future<void> close() async {
+    await db.close();
+    dispose();
+  }
 }
