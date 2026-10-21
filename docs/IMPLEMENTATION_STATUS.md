@@ -3,7 +3,7 @@
 최종 갱신: 2026-10-21 (Asia/Seoul)
 
 ## 상태
-전체 요구사항 미완료. 로컬 학습 기능과 선택적 AI BYOK를 구현한 개발 프리릴리스 후보입니다. 기능 코드 작성과 실행 검증을 구분합니다.
+전체 요구사항 미완료. 로컬 학습 기능과 선택적 AI BYOK를 구현한 v0.1.0-alpha.2 개발 프리릴리스를 게시했습니다. 기능 코드 작성과 실행 검증을 구분합니다.
 
 ## 코드 작성
 - Flutter/Riverpod/go_router 앱, 반응형 내비게이션, 디자인 토큰, 온보딩 진행 저장
@@ -28,10 +28,13 @@
 - Android API 36.1 x86_64 에뮬레이터에서 온보딩 → PDF 가져오기 → 렌더 → 텍스트 선택 → 하이라이트/책갈피 → DB 재오픈 보존 시나리오 통과.
 - GitHub Actions 39561512851: Windows 분석/16개 테스트/release 빌드/설치 프로그램과 Android release APK 빌드 성공.
 - GitHub Actions 39564266923: AI 포함 20개 테스트와 Windows 실제 문서 통합 테스트 통과. 오래된 후보의 Android 실행은 최종 후보 검증으로 대체하여 중단.
-- alpha.1 릴리스 실행은 Canvas CDN 보완을 포함하기 위해 중단. main 후속 실행에서 Visual Studio 18 CRT 디렉터리 구조 차이로 패키징 실패를 확인하여 재귀 탐색으로 수정. alpha.2 후보를 최종 검증할 예정.
+- alpha.1 릴리스 실행은 Canvas CDN 보완을 포함하기 위해 중단. main 후속 실행에서 Visual Studio 18 CRT 디렉터리 구조 차이로 패키징 실패를 확인하여 재귀 탐색으로 수정.
+- alpha.2 Actions 39568161638 전체 성공: 포맷·정적 분석·26개 unit/widget·Windows 문서 통합 테스트·Windows release 빌드/설치 프로그램/Portable 패키징·프로젝트 키 서명 Android release APK 빌드·Android API 35 문서 통합 테스트·apksigner 검증·프리릴리스 게시. 다운로드한 ZIP/설치 EXE의 SHA256이 배포 체크섬과 일치하고 Portable에 Visual C++ 런타임 DLL이 포함됨을 확인.
+- 동일 CI의 배포 APK SHA256(4f833eb5…602d64)이 GitHub Release digest/체크섬과 일치함을 확인. Android API 35 800×1340 태블릿 에뮬레이터의 기존 Fenru 설치가 없는 상태에서 프로젝트 키 APK 설치 성공. 연결 없이 시작 → 홈 → 설정 → AI 키 입력 화면의 실제 렌더를 확인하고 docs/screenshots에 저장. 호스트 메모리 압박 중 Android System UI의 일시적 ANR이 나타났으므로 성능 검증 통과로 간주하지 않음.
+- 태블릿 배포 앱을 강제 종료 후 다시 시작했을 때 온보딩을 반복하지 않고 홈으로 복원됨을 접근성 트리로 확인.
 - Windows CI 배포본 실행·최초 온보딩 접근성 트리 확인. 컴퓨터 입력 도구가 SendInput 오류 87을 반환해 이를 수동 조작/시각 검증 성공으로 간주하지 않음. 위젯 테스트 렌더 6개를 별도로 생성·확인.
 - 사용자가 Windows 앱 설정에서 Canvas 연결 완료를 보고. 비밀을 읽지 않고 URL 설정 저장/온보딩 완료만 확인. 아직 자료 가져오기 기록·객체는 없음.
-- 사용자 승인 후 개발 환경 기존 키로 공식 OpenAI 모델 조회를 시도했으나 HTTP 401. 실제 생성 API 성공 미검증. 새 키는 앱 설정에 직접 입력.
+- 사용자 승인 후 개발 환경 기존 키로 공식 OpenAI 모델 조회를 시도했으나 HTTP 401. 실제 생성 API 성공 미검증. 새 키는 앱 설정에 직접 입력하며 사용자는 아직 입력 전이라고 확인.
 - DeepSeek·Google 실제 계정 연동 미검증. Android 실물 기기 미검증.
 - 로컬 Windows 컴파일은 Visual C++ ATL(atlstr.h) 구성요소 부족으로 차단. CI Windows 빌드는 성공.
 
@@ -49,7 +52,7 @@ Canvas 다운로드는 HTTPS 리다이렉트를 처리하고 외부 호스트 �
 파일 변경 버전은 별도 문서로 보관하며 이전 주석을 신규 PDF 좌표로 자동 이전하지 않습니다.
 
 ## 다음 작업
-1. 최종 CI/서명/APK 설치 검증 후 프리릴리스 공개.
+1. 사용자 환경 피드백과 실물 기기/설치 프로그램 실행 검증.
 2. 새 API 키로 실제 AI 생성/출처 이동, Canvas 실제 자료 가져오기 검증.
 3. Drive OAuth와 객체 동기화, PDF 텍스트 인덱싱/RAG.
 4. 플랫폼 위젯/트레이/알림, 번역, 큰 글꼴·실물 기기·성능 검증.
@@ -61,4 +64,8 @@ Canvas 다운로드는 HTTPS 리다이렉트를 처리하고 외부 호스트 �
 - Android 프로젝트 키는 생성/Secrets 보관 완료. 별도 안전한 키 백업과 선택적 Windows 서명 인증서 필요.
 
 ## 산출물
-검증 성공 전 정식 릴리스를 만들지 않습니다. 실제 릴리스와 다운로드 주소는 생성 후 기록합니다.
+- [v0.1.0-alpha.2 프리릴리스](https://github.com/vividhyeok/fenru/releases/tag/v0.1.0-alpha.2)
+- [Windows 설치 프로그램](https://github.com/vividhyeok/fenru/releases/download/v0.1.0-alpha.2/Fenru-Windows-x64-Setup.exe)
+- [Windows Portable ZIP](https://github.com/vividhyeok/fenru/releases/download/v0.1.0-alpha.2/Fenru-Windows-x64-portable.zip)
+- [Android 프로젝트 키 서명 APK](https://github.com/vividhyeok/fenru/releases/download/v0.1.0-alpha.2/Fenru-Android-release.apk)
+- [최종 Actions 검증](https://github.com/vividhyeok/fenru/actions/runs/39568161638)

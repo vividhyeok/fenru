@@ -6,7 +6,7 @@
 
 ## 다운로드
 
-검증된 릴리스가 생성되면 [GitHub Releases](https://github.com/vividhyeok/fenru/releases)에서 Windows Portable ZIP과 Android APK를 제공합니다. 현재 문서는 다운로드 파일의 존재를 보장하지 않습니다.
+[v0.1.0-alpha.2 개발 프리릴리스](https://github.com/vividhyeok/fenru/releases/tag/v0.1.0-alpha.2)를 게시했습니다. [Windows 설치 프로그램](https://github.com/vividhyeok/fenru/releases/download/v0.1.0-alpha.2/Fenru-Windows-x64-Setup.exe), [Portable ZIP](https://github.com/vividhyeok/fenru/releases/download/v0.1.0-alpha.2/Fenru-Windows-x64-portable.zip), [프로젝트 키 서명 Android APK](https://github.com/vividhyeok/fenru/releases/download/v0.1.0-alpha.2/Fenru-Android-release.apk)를 제공합니다. 체크섬과 공개 서명 인증서 정보는 릴리스에 포함됩니다. [최종 CI](https://github.com/vividhyeok/fenru/actions/runs/39568161638)는 26개 unit/widget 테스트, Windows/Android 문서 통합 테스트와 두 플랫폼 빌드/패키징을 통과했습니다.
 
 ## 구현한 기능
 
@@ -54,7 +54,11 @@ SQLite와 파일은 앱 지원 디렉터리/workspace에 보관합니다. 실행
 
 [사용 설명서](docs/USER_GUIDE.md) · [보안](docs/SECURITY.md) · [설계](docs/ARCHITECTURE.md) · [라이선스](docs/OPEN_SOURCE.md) · [기여](CONTRIBUTING.md)
 
-[문제 보고](https://github.com/vividhyeok/fenru/issues)에 재현 과정과 OS를 남겨 주세요. 토큰·API 키·개인 자료를 첨부하지 마세요. 실행 화면 스크린샷은 실제 GUI 검증 후 추가합니다.
+[문제 보고](https://github.com/vividhyeok/fenru/issues)에 재현 과정과 OS를 남겨 주세요. 토큰·API 키·개인 자료를 첨부하지 마세요.
+
+아래는 프로젝트 키로 서명한 alpha.2 배포 APK를 Android API 35 태블릿 에뮬레이터에 설치하고 직접 확인한 홈 화면입니다. 실물 기기 검증은 아직 없습니다.
+
+![Android 태블릿 배포 APK 실제 홈 화면](docs/screenshots/android-tablet-release-home.png)
 
 ## 화면
 

@@ -14,3 +14,7 @@ OpenAI 공식 문서 확인: https://developers.openai.com/api/reference/resourc
 DeepSeek 공식 문서: https://api-docs.deepseek.com/
 
 관련 문서: 앱 내부 도움말, SECURITY.md. 정교한 검색 기반 RAG·금액 경고·재생성·전체 대화 관리 UI는 후속 작업입니다.
+
+alpha.2 프로젝트 키 서명 APK의 Android API 35 태블릿 에뮬레이터 실제 설정 화면입니다. API 키는 입력하지 않았습니다.
+
+![Android 배포 APK의 API 키 설정](screenshots/android-tablet-release-ai-settings.png)

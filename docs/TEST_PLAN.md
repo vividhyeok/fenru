@@ -6,4 +6,6 @@
 
 실제 기기 시나리오: Windows 최초 실행→가져오기→PDF→노트→재실행, Android 동일 흐름, ZIP 이동 및 동시 편집, 실제 Canvas, 최종 AI/Drive 계정 연결, 위젯/공유/알림. 미구현 기능은 시나리오 통과로 표시하지 않습니다.
 
-integration_test/local_flow_test.dart는 실제 앱 최초 진입 smoke test입니다. CI에서 현재 unit/widget만 실행하며 플랫폼 integration test 실행은 추가해야 합니다.
+integration_test/local_flow_test.dart는 임시 작업 공간에서 온보딩 → PDF 가져오기 → 렌더 → 문장 선택 → 하이라이트/책갈피 → DB 종료/재오픈 후 보존을 확인합니다. CI는 Windows와 Android API 35 에뮬레이터에서 실행하며, 로컬 Android API 36.1에서도 통과했습니다. 사용자의 실제 작업 공간과 인증 정보는 사용하지 않습니다.
+
+현재 unit/widget 테스트 26개는 쓰기 직렬화·재오픈·FTS·휴지통, 파일 복사/중복, 백업 체크섬/경로 검증과 동시 편집 병합/멱등성, Canvas 페이지네이션·외부 CDN 토큰 제거·HTTPS 제한, OpenAI/DeepSeek 스트림 파싱·오류 메시지 비밀 제외, API 키 입력 숨김, 로컬 온보딩, 밝기별 3개 화면 크기 레이아웃, Windows 중복 실행 잠금을 검증합니다. 위젯 렌더 이미지는 실제 OS 스크린샷과 구분합니다. 실제 API 생성·학교 자료 다운로드·실물 기기·설치 프로그램 실행은 별도 검증 대상입니다.

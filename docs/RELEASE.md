@@ -2,7 +2,7 @@
 
 GitHub Actions Verify and build는 main/PR에서 포맷·Windows 분석·unit/widget·Windows 문서 통합 테스트·release 빌드 후 Android release APK와 에뮬레이터 문서 통합 테스트를 검증합니다. Linux 에뮬레이터에는 KVM 권한을 준비합니다. tools/bootstrap.py가 고정 Flutter SDK에서 플랫폼 러너를 생성하며 기존 러너는 보존합니다. source-verified artifact로 러너·lockfile을 보관합니다. 테스트 화면은 ui-screenshots artifact로 분리하여 릴리스 파일에 폴더가 섞이지 않게 합니다.
 
-v* 태그에서 두 플랫폼 검증이 모두 성공하면 GITHUB_TOKEN(contents:write)으로 개발 prerelease를 생성합니다. Windows portable ZIP, Android test-signed APK, SHA256 체크섬을 업로드합니다. 실패한 빌드를 정식 릴리스로 생성하지 않습니다.
+v* 태그에서 두 플랫폼 검증이 모두 성공하면 GITHUB_TOKEN(contents:write)으로 개발 prerelease를 생성합니다. Windows 설치 프로그램/portable ZIP, 프로젝트 키로 서명한 Android release APK, SHA256 체크섬과 공개 서명 인증서 정보를 업로드합니다. Secrets가 없는 실행의 APK는 test-signed로 구분합니다. 실패한 빌드를 정식 릴리스로 생성하지 않습니다.
 
 프로젝트 Android RSA 4096 서명 키를 생성하고 GitHub Secrets(FENRU_KEYSTORE_B64/FENRU_STORE_PASSWORD/FENRU_KEY_ALIAS/FENRU_KEY_PASSWORD)에 보관했습니다. 비공개 로컬 사본은 tools/local/fenru-release.jks, 비밀번호는 동일 Windows 사용자만 복호화 가능한 signing-password.dpapi에 보관합니다. 이 디렉터리는 Git에서 제외됩니다. 기존 키는 생성 스크립트가 덮어쓰지 않습니다. 장기 보관과 복구용 별도 안전한 백업을 유지하세요. 키와 비밀번호가 모두 유실되면 같은 앱 서명 업데이트가 불가능할 수 있습니다.
 
