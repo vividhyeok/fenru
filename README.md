@@ -6,20 +6,20 @@
 
 ## 다운로드
 
-[v0.1.0-alpha.4 개발 프리릴리스](https://github.com/vividhyeok/fenru/releases/tag/v0.1.0-alpha.4)를 게시했습니다. [Windows 설치 프로그램](https://github.com/vividhyeok/fenru/releases/download/v0.1.0-alpha.4/Fenru-Windows-x64-Setup.exe), [Portable ZIP](https://github.com/vividhyeok/fenru/releases/download/v0.1.0-alpha.4/Fenru-Windows-x64-portable.zip), [프로젝트 키 서명 Android APK](https://github.com/vividhyeok/fenru/releases/download/v0.1.0-alpha.4/Fenru-Android-release.apk)를 제공합니다. 체크섬과 공개 서명 인증서 정보는 릴리스에 포함됩니다. [최종 CI](https://github.com/vividhyeok/fenru/actions/runs/39601030713)는 32개 unit/widget 테스트, Windows/Android 문서 통합 테스트와 두 플랫폼 빌드/패키징을 통과했습니다.
+[v0.1.0-alpha.5 개발 프리릴리스](https://github.com/vividhyeok/fenru/releases/tag/v0.1.0-alpha.5)를 게시했습니다. [Windows 설치 프로그램](https://github.com/vividhyeok/fenru/releases/download/v0.1.0-alpha.5/Fenru-Windows-x64-Setup.exe), [Portable ZIP](https://github.com/vividhyeok/fenru/releases/download/v0.1.0-alpha.5/Fenru-Windows-x64-portable.zip), [프로젝트 키 서명 Android APK](https://github.com/vividhyeok/fenru/releases/download/v0.1.0-alpha.5/Fenru-Android-release.apk)를 제공합니다. 체크섬과 공개 서명 인증서 정보는 릴리스에 포함됩니다. [최종 CI](https://github.com/vividhyeok/fenru/actions/runs/39614048408)는 40개 unit/widget 테스트, Windows/Android 문서 통합 테스트와 두 플랫폼 빌드/패키징을 통과했습니다.
 
 ## 구현한 기능
 
 - 로컬 전용 온보딩과 라이트/다크 테마
 - 파일 가져오기·해시 중복 검사·이름/폴더/태그·휴지통
-- PDF 열람·본문 검색·페이지 이동·읽던 위치·책갈피·페이지 메모·선택 하이라이트/밑줄
+- PDF 썸네일·목차·주석 탐색, 확대/맞춤·검색·읽기 색상·책갈피·페이지 메모·선택 하이라이트/밑줄
 - 텍스트와 이미지 미리보기, 다른 형식은 외부 앱으로 열기
 - Markdown 노트 편집·자동 저장·미리보기·자료 연결
 - 제목/노트/텍스트 검색, 학습 일정·완료 체크
 - Canvas HTTPS 주소와 보안 토큰 설정, 선택 과목 파일·과제 가져오기
 - ZIP 백업 및 벡터 시계 기반 병합·충돌 복사본
 - 앱 내부 도움말과 오픈소스 라이선스 화면
-- OpenAI Responses / DeepSeek BYOK 설정, 모델 조회/직접 입력, 스트리밍·취소·대화 보관, PDF 페이지 컨텍스트와 검증된 내부 출처 링크
+- OpenAI Responses / DeepSeek BYOK 설정, 모델 조회/직접 입력, 스트리밍·취소·대화 보관, 과목/자료별 질문·로컬 근거 검색과 검증된 내부 출처 링크
 
 ## 개발
 
@@ -66,3 +66,7 @@ SQLite와 파일은 앱 지원 디렉터리/workspace에 보관합니다. 실행
 
 ![데스크톱 라이트 모드 테스트 렌더](docs/screenshots/home-desktop-test-render.png)
 ![모바일 다크 모드 테스트 렌더](docs/screenshots/home-mobile-test-render.png)
+
+alpha.5 Windows 문서 통합 테스트에서 직접 렌더링한 PDF 리더입니다. 프로젝트가 작성한 테스트 문서를 사용했습니다.
+
+![Windows PDF 리더 통합 테스트](docs/screenshots/reader-native-scoped.png)
