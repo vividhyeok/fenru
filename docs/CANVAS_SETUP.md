@@ -11,3 +11,11 @@
 참고 조사: [Obsidian Canvas Sync](https://github.com/SixFiveMil/obsidian-canvas-sync/blob/main/src/api/canvas-client.ts)는 모듈별 파일 ID 발견/파일 목록 병합과 접근 기능 진단을 사용합니다. [CanvasSync](https://github.com/perslev/CanvasSync/blob/master/CanvasSync/entities/module.py)는 모듈 항목에서 File을 찾은 뒤 파일 정보를 조회합니다. 이 흐름과 공식 REST 규격을 참고하여 Dart로 작성했으며 소스 코드를 복사하지 않았습니다. GPAI 공개 사이트에서는 Canvas 가져오기 내부 구현을 확인하지 못했습니다.
 
 공식 API: https://developerdocs.instructure.com/services/canvas
+
+## 제주대 LearningX (alpha.4)
+
+실제 진단에서 Canvas 과목 목록은 정상(13개)인데 Files 목록은 401이고, 주차별 자료는 ExternalTool로 제공됨을 확인했습니다. 이 경우 Canvas 토큰만 LearningX API에 그대로 보내면 실패합니다. 앱은 공식 Canvas sessionless_launch로 학교의 주차별 학습(modulebuilder) LTI 인증 양식을 받아 같은 학교 주소에만 제출하고, 발급된 LearningX 단기 토큰을 메모리에서 사용합니다. 추가 학교 비밀번호 입력은 필요하지 않습니다. 강의 항목 뷰어, 영상 재생, 퀴즈·설문 응답, 출석 완료 API는 호출하지 않습니다.
+
+LearningX attachment는 Canvas의 단일 파일 API로, Commons PDF/문서는 common.jejunu.ac.kr의 content.php XML에 있는 원본 다운로드 주소로 가져옵니다. 정확한 학교/Commons 출처를 검증하며 Canvas/LearningX 토큰과 학교 쿠키를 Commons에 전송하지 않습니다. 출처가 명확한 기존 HTTP Commons 링크는 HTTPS로 올려 요청합니다. 다른 학교의 Commons 주소는 별도 검증 후 지원해야 합니다. 일부 과거 자료는 view_url이 없어 content_id로 조회하며, 저장소에서 원본 다운로드 주소를 주지 않으면 경고에 남깁니다. 실제 파일을 다운로드하면 학교 서버의 접속 기록은 남을 수 있습니다.
+
+추가 참고: [Canvas 공식 sessionless launch](https://developerdocs.instructure.com/services/canvas/resources/external_tools), [LearningX/Commons 자료 처리 사례](https://github.com/ghdtjdwn/ssuMCP/blob/main/docs/adr/0033-lms-material-zip-export.md), [LearningX 인증과 조회 사례](https://github.com/cwon-z/skku-icampus-mcp/blob/main/docs/icampus-notes.md). 공개 인터페이스 흐름을 참고했으며 소스 코드를 복사하지 않았습니다.

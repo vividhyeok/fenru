@@ -6,6 +6,7 @@ import 'package:path/path.dart' as p;
 
 import '../core/models.dart';
 import '../core/workspace.dart';
+import 'learningx.dart';
 
 abstract interface class LmsProvider {
   Future<List<Json>> courses();
@@ -46,6 +47,7 @@ class CanvasProvider implements LmsProvider {
   final String token;
   final Dio http;
   bool _authenticated = false;
+  LearningXProvider? _learningX;
 
   Future<CanvasRequestException> requestError(
     DioException e,
@@ -373,9 +375,12 @@ class CanvasProvider implements LmsProvider {
     void Function(String) progress,
   ) async {
     final files = <String, Json>{};
+    var hasLearningX = false;
     void add(Json file) {
       final id = '${file['id']}';
-      if (RegExp(r'^\d+$').hasMatch(id)) files.putIfAbsent(id, () => file);
+      if (RegExp(r'^(\d+|learningx:[a-zA-Z0-9_-]+)$').hasMatch(id)) {
+        files.putIfAbsent(id, () => file);
+      }
     }
 
     progress('과목 파일 목록을 확인하고 있습니다…');
@@ -410,6 +415,14 @@ class CanvasProvider implements LmsProvider {
           continue;
         }
         for (final item in items) {
+          final external = Uri.tryParse('${item['external_url']}');
+          if (item['type'] == 'ExternalTool' &&
+              external?.scheme == 'https' &&
+              external?.host.isNotEmpty == true &&
+              external?.origin == base.origin &&
+              external?.path.startsWith('/learningx/') == true) {
+            hasLearningX = true;
+          }
           if (item['type'] != 'File') continue;
           final id = '${item['content_id']}';
           if (!RegExp(r'^\d+$').hasMatch(id) || files.containsKey(id)) continue;
@@ -433,6 +446,31 @@ class CanvasProvider implements LmsProvider {
     } on CanvasRequestException catch (e) {
       if (!e.restricted) rethrow;
       report.warnings.add('모듈 목록에 접근할 수 없습니다. 공개 파일 목록의 자료만 처리했습니다.');
+    }
+    if (hasLearningX) {
+      progress('학교 LearningX 주차별 문서와 첨부자료를 확인하고 있습니다…');
+      try {
+        final provider = _learningX ??= LearningXProvider(
+          base,
+          http,
+          collection,
+          object,
+        );
+        provider.warnings.clear();
+        for (final file in await provider.files(courseId)) {
+          add(file);
+        }
+        report.warnings.addAll(provider.warnings);
+      } on CanvasRequestException catch (e) {
+        if (e.authenticationFailed) rethrow;
+        report.warnings.add('LearningX 연결 제한: ${e.message}');
+      } on UserFacingException catch (e) {
+        report.warnings.add(e.message);
+      } on DioException {
+        report.warnings.add(
+          '학교 LearningX 자료 조회에 실패했습니다. Canvas 토큰 만료와는 별개이며, 잠시 후 다시 시도하세요.',
+        );
+      }
     }
     return files.values.toList();
   }

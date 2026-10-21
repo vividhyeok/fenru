@@ -16,6 +16,7 @@
 | archive/crypto/uuid/path | ZIP/해시/ID/경로 | MIT / BSD-3-Clause | Dart, 채택 |
 | open_filex/url_launcher | 외부 앱/웹 열기 | BSD-3-Clause | Windows/Android, 채택 |
 | desktop_drop 0.8.0 | Windows 파일 드롭 | MIT | Windows/Android 앱 빌드. 0.9.2는 file_picker의 cross_file 제약과 충돌하여 미채택 |
+| html 0.15.7 / xml 7.1.0 | 학교 LTI 인증 양식 / Commons 다운로드 메타데이터 파싱 | MIT | 공개 패키지 의존성으로 채택, 임의 스크립트 실행 없음 |
 
 모든 패키지는 소스 복사 대신 pub 의존성으로 사용합니다. 고정 버전과 전이 의존성 lockfile을 유지하며 라이선스 화면을 앱 설정에서 제공합니다. PDFium 제3자 고지와 플랫폼 DLL 배포 포함 여부는 패키징 검증이 필요합니다.
 

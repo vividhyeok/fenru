@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-alpha.4 — 제주대 LearningX 문서 가져오기 후보
+
+- 실제 계정 진단으로 과목 API 200/파일 목록 401, LearningX ExternalTool 자료 구성을 확인.
+- Canvas의 공식 서명 LTI 주차별 학습 연결로 LearningX 단기 인증을 얻고 모듈의 첨부자료와 Commons 문서 다운로드 지원.
+- 제주대 common.jejunu.ac.kr의 정확한 저장소 경계만 허용하고 토큰·쿠키를 Commons로 전달하지 않음.
+- 영상·퀴즈·설문 및 출석 완료 요청을 자동 실행하지 않으며, 다운로드 주소가 없는 자료는 경고로 보고.
+- alpha.3 후보는 학교별 실제 LearningX 구성을 반영하기 위해 배포 전 CI를 중단했으며 Release로 게시하지 않음.
+
 ## 0.1.0-alpha.3 — Canvas 가져오기 수정 후보
 
 - 과목 조회 후 파일 API가 401을 반환할 때 인증 상태를 다시 확인하여 과목 접근 제한과 토큰 인증 실패를 구분.

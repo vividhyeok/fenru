@@ -1,7 +1,7 @@
 name: fenru
 description: Local-first personal learning workspace for Windows and Android.
 publish_to: none
-version: 0.1.0-alpha.3+3
+version: 0.1.0-alpha.4+4
 environment:
   sdk: ^3.13.5
 dependencies:
@@ -26,6 +26,8 @@ dependencies:
   url_launcher: 6.3.3
   open_filex: 5.0.0
   desktop_drop: 0.8.0
+  html: 0.15.7
+  xml: 7.1.0
 dev_dependencies:
   flutter_test:
     sdk: flutter

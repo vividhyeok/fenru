@@ -727,7 +727,7 @@ class _FenruShellState extends State<FenruShell> {
       summaries.addAll(report.warnings);
       if (report.imported == 0 && report.unchanged == 0) {
         summaries.add(
-          '내려받을 공개 파일이 발견되지 않았습니다. 학교 강의실의 주차별 학습 자료가 외부 도구(LTI)로 제공되는 경우 현재 Canvas 파일 API로 가져올 수 없습니다.',
+          '내려받을 문서 파일이 발견되지 않았습니다. 영상·퀴즈·설문은 다운로드하지 않습니다. 아래 경고와 학교 강의실의 원본 문서 다운로드 제공 여부를 확인하세요.',
         );
       }
     }
@@ -976,7 +976,7 @@ class _FenruShellState extends State<FenruShell> {
       ),
       const SizedBox(height: 20),
       const Text(
-        'Fenru 0.1.0-alpha.3 · 개발 프리릴리스\n로컬 데이터는 자동 저장됩니다. 별도 계정이나 추적 SDK를 사용하지 않습니다.',
+        'Fenru 0.1.0-alpha.4 · 개발 프리릴리스\n로컬 데이터는 자동 저장됩니다. 별도 계정이나 추적 SDK를 사용하지 않습니다.',
       ),
     ],
   );
