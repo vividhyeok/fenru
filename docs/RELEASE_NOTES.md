@@ -23,7 +23,7 @@
 alpha.6 후보는 네이티브 통합 테스트의 새 메뉴 선택 대상을 바로잡기 위해 배포 전에 중단했으며 Release로 게시하지 않았습니다.
 
 ## 검증과 업데이트
-47개 unit/widget 테스트 통과. PDF 펜 입력/검색/확대/주석 Undo·Redo/정리 노트 자동 저장/재오픈 보존을 Windows·Android 문서 통합 테스트로 검증합니다. 최종 결과는 Actions 및 구현 현황을 확인하세요. 이번 변경에서 실제 유료 AI 생성 요청은 하지 않았습니다.
+47개 unit/widget 테스트와 PDF 펜 입력/검색/확대/주석 Undo·Redo/정리 노트 자동 저장/재오픈 보존의 Windows·Android 문서 통합 테스트를 통과했습니다. [최종 Actions](https://github.com/vividhyeok/fenru/actions/runs/39712689175) 전체 성공 및 두 플랫폼 패키징/Android 서명 검증을 확인했습니다. 이번 변경에서 실제 유료 AI 생성 요청은 하지 않았습니다.
 
 Windows 설치형/Portable는 서명되지 않았습니다. Android APK는 기존 프로젝트 키로 서명합니다. 기존 Fenru를 종료하고 새 버전을 실행하세요. 자료와 연결 설정은 유지되며, 업데이트 전 ZIP 백업을 권장합니다. Google Drive 자동 동기화·의미 기반 전체 라이브러리 RAG/OCR 등 전체 제품 요구사항은 아직 완료되지 않았습니다.
 
