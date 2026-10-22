@@ -75,7 +75,13 @@ class StudyContextService {
         .map((d) => d.text('previousVersion'))
         .where((id) => id.isNotEmpty)
         .toSet();
-    return docs.where((d) => !previous.contains(d.id)).toList();
+    return docs
+        .where(
+          (d) =>
+              !previous.contains(d.id) &&
+              !(workspace.byId(d.text('pdfDocumentId'))?.deleted == false),
+        )
+        .toList();
   }
 
   Future<List<String>> pages(WorkspaceObject document) async {
@@ -161,7 +167,14 @@ class StudyContextService {
   ) async {
     final candidates = <DocumentContext>[];
     final notices = <String>[];
-    for (final doc in documents.where((d) => !d.deleted)) {
+    final seen = <String>{};
+    for (final entry in documents.where((d) => !d.deleted)) {
+      final original = workspace.byId(entry.id) ?? entry;
+      final converted = workspace.byId(original.text('pdfDocumentId'));
+      final doc = converted != null && !converted.deleted
+          ? converted
+          : original;
+      if (!seen.add(doc.id)) continue;
       checkCancellation();
       try {
         final text = await pages(doc);

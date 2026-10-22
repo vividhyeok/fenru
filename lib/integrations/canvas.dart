@@ -3,9 +3,11 @@ import 'dart:convert';
 
 import 'package:dio/dio.dart';
 import 'package:path/path.dart' as p;
+import 'package:html/parser.dart' as html;
 
 import '../core/models.dart';
 import '../core/workspace.dart';
+import 'pdf_conversion.dart';
 import 'learningx.dart';
 
 abstract interface class LmsProvider {
@@ -299,6 +301,9 @@ class CanvasProvider implements LmsProvider {
         if (file['_moduleFallback'] == true && downloadName != null) {
           displayName = p.basename(downloadName.replaceAll('\\', '/'));
         } else if (p.extension(displayName).isEmpty) {
+          if (downloadName != null && p.extension(downloadName).isNotEmpty) {
+            displayName = p.basename(downloadName.replaceAll('\\', '/'));
+          }
           final header = await File(transfer)
               .openRead(0, 5)
               .fold<List<int>>([], (all, part) => all..addAll(part));
@@ -314,12 +319,23 @@ class CanvasProvider implements LmsProvider {
             'Canvas 파일 크기가 원본 정보와 다릅니다. 가져오기를 중단했습니다.',
           );
         }
-        final imported = await workspace.importFile(
+        final imported = await importStudyFile(
+          workspace,
           transfer,
           folder: local.title,
           displayName: displayName,
-          origin: {'source': sourceKey, 'id': externalId, 'updated': modified},
+          origin: {
+            'source': sourceKey,
+            'id': externalId,
+            'updated': modified,
+            'locations': file['_locations'] ?? [],
+          },
         );
+        if (imported.text('conversionStatus') == 'failed') {
+          report.warnings.add(
+            '$displayName: 원본 저장 완료, ${imported.text('conversionError')}',
+          );
+        }
         if (previous.isNotEmpty) {
           await workspace.save('document', {
             ...imported.data,
@@ -375,6 +391,7 @@ class CanvasProvider implements LmsProvider {
     void Function(String) progress,
   ) async {
     final files = <String, Json>{};
+    final modulePages = <String>{};
     var hasLearningX = false;
     void add(Json file) {
       final id = '${file['id']}';
@@ -415,6 +432,9 @@ class CanvasProvider implements LmsProvider {
           continue;
         }
         for (final item in items) {
+          if (item['type'] == 'Page' && item['page_url'] is String) {
+            modulePages.add(item['page_url'] as String);
+          }
           final external = Uri.tryParse('${item['external_url']}');
           if (item['type'] == 'ExternalTool' &&
               external?.scheme == 'https' &&
@@ -472,7 +492,180 @@ class CanvasProvider implements LmsProvider {
         );
       }
     }
+    await discoverContentAttachments(
+      courseId,
+      files,
+      modulePages,
+      report,
+      progress,
+    );
     return files.values.toList();
+  }
+
+  Future<void> discoverContentAttachments(
+    String courseId,
+    Map<String, Json> files,
+    Set<String> modulePages,
+    CanvasImportReport report,
+    void Function(String) progress,
+  ) async {
+    progress('페이지 · 게시판 · 공지 · 과제의 첨부자료를 확인하고 있습니다…');
+    final attempted = <String>{...files.keys};
+    Future<List<Json>> list(String path, String name) async {
+      try {
+        return await collection(path);
+      } on CanvasRequestException catch (e) {
+        if (e.authenticationFailed) rethrow;
+        report.warnings.add('$name: 목록에 접근할 수 없어 건너뛰었습니다.');
+        return [];
+      }
+    }
+
+    Future<void> link(String raw, String title, String location) async {
+      final parsed = Uri.tryParse(raw);
+      if (parsed == null) return;
+      final uri = base.resolveUri(parsed);
+      if (uri.scheme != 'https' ||
+          uri.origin != base.origin ||
+          uri.userInfo.isNotEmpty) {
+        return;
+      }
+      final match = RegExp(
+        r'(?:^|/)(?:api/v1/)?(?:courses/\d+/)?files/(\d+)(?:/|$)',
+      ).firstMatch(uri.path);
+      if (match == null) return;
+      final id = match.group(1)!;
+      if (files.containsKey(id)) {
+        final places =
+            (files[id]!['_locations'] as List? ?? []).map((v) => '$v').toSet()
+              ..add(location);
+        files[id]!['_locations'] = places.toList();
+        return;
+      }
+      if (!attempted.add(id)) return;
+      Json file;
+      try {
+        file = await object('/api/v1/courses/$courseId/files/$id');
+      } on CanvasRequestException catch (e) {
+        if (e.authenticationFailed) rethrow;
+        file = {
+          'id': id,
+          'display_name': title.trim().isEmpty ? 'file_$id' : title.trim(),
+          'url': base
+              .resolve('/courses/$courseId/files/$id/download')
+              .toString(),
+          '_moduleFallback': true,
+        };
+      }
+      files[id] = {
+        ...file,
+        '_locations': [location],
+      };
+    }
+
+    Future<void> content(dynamic value, String location) async {
+      if (value is List) {
+        for (final item in value) {
+          await content(item, location);
+        }
+        return;
+      }
+      if (value is! Map) return;
+      for (final key in ['body', 'message', 'description']) {
+        if (value[key] is! String) continue;
+        final doc = html.parse(value[key] as String);
+        for (final element in doc.querySelectorAll(
+          '[href], [data-api-endpoint], [src]',
+        )) {
+          final raw =
+              element.attributes['data-api-endpoint'] ??
+              element.attributes['href'] ??
+              element.attributes['src'];
+          if (raw != null) {
+            await link(raw, element.text, location);
+          }
+        }
+      }
+      if (value['url'] is String) {
+        await link(
+          value['url'] as String,
+          '${value['display_name'] ?? value['filename'] ?? ''}',
+          location,
+        );
+      }
+      for (final key in [
+        'attachments',
+        'attachment',
+        'view',
+        'replies',
+        'entries',
+      ]) {
+        if (value[key] != null) {
+          await content(value[key], location);
+        }
+      }
+    }
+
+    final pages = await list(
+      '/api/v1/courses/$courseId/pages?include[]=body&per_page=100',
+      '페이지',
+    );
+    final seenPages = <String>{};
+    Future<void> page(Json item) async {
+      final slug = '${item['url'] ?? ''}';
+      if (slug.isEmpty || !seenPages.add(slug)) return;
+      try {
+        final detail = item['body'] is String
+            ? item
+            : await object(
+                '/api/v1/courses/$courseId/pages/${Uri.encodeComponent(slug)}',
+              );
+        await content(detail, '페이지 · ${detail['title'] ?? slug}');
+      } on CanvasRequestException catch (e) {
+        if (e.authenticationFailed) rethrow;
+        report.warnings.add('페이지 $slug: 접근할 수 없습니다.');
+      }
+    }
+
+    for (final item in pages) {
+      await page(item);
+    }
+    for (final slug in modulePages) {
+      await page({'url': slug});
+    }
+    for (final announcements in [false, true]) {
+      final topics = await list(
+        '/api/v1/courses/$courseId/discussion_topics?per_page=100${announcements ? '&only_announcements=true' : ''}',
+        announcements ? '공지' : '게시판',
+      );
+      for (final topic in topics) {
+        final location =
+            '${announcements ? '공지' : '게시판'} · ${topic['title'] ?? ''}';
+        await content(topic, location);
+        final id = '${topic['id']}';
+        if (!announcements &&
+            topic['user_can_see_posts'] != false &&
+            RegExp(r'^\d+$').hasMatch(id)) {
+          try {
+            await content(
+              await object(
+                '/api/v1/courses/$courseId/discussion_topics/$id/view',
+              ),
+              location,
+            );
+          } on CanvasRequestException catch (e) {
+            if (e.authenticationFailed) rethrow;
+            report.warnings.add('$location: 답글 첨부자료에 접근할 수 없습니다.');
+          }
+        }
+      }
+    }
+    for (final item in await list(
+      '/api/v1/courses/$courseId/assignments?per_page=100',
+      '과제 첨부자료',
+    )) {
+      await content(item, '과제 · ${item['name'] ?? ''}');
+    }
   }
 
   static UserFacingException mapError(DioException e) => UserFacingException(

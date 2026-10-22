@@ -3,7 +3,7 @@
 AppId={{7F052738-70B9-4362-80FB-AEC19AF7DE75}
 AppName=Fenru
 AppVersion={#AppVersion}
-AppVerName=Fenru {#AppVersion} alpha.5
+AppVerName=Fenru {#AppVersion} alpha.6
 AppPublisher=vividhyeok
 AppPublisherURL=https://github.com/vividhyeok/fenru
 DefaultDirName={localappdata}\Programs\Fenru

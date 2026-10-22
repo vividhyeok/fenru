@@ -9,6 +9,112 @@ import 'package:fenru/core/database.dart';
 import 'package:fenru/core/workspace.dart';
 
 void main() {
+  test('discovers page, module page, discussion reply, announcement and assignment attachments', () async {
+    ResponseBody json(Object data) => ResponseBody.fromString(
+      jsonEncode(data),
+      200,
+      headers: {
+        'content-type': ['application/json'],
+      },
+    );
+    final requested = <String>[];
+    final dio = Dio()
+      ..httpClientAdapter = _Adapter((r) {
+        requested.add(r.uri.host);
+        final path = r.uri.path;
+        if (path == '/api/v1/courses/1/files') return json([]);
+        if (path == '/api/v1/courses/1/modules') {
+          return json([
+            {'id': 2},
+          ]);
+        }
+        if (path == '/api/v1/courses/1/modules/2/items') {
+          return json([
+            {'type': 'Page', 'page_url': 'week-1'},
+          ]);
+        }
+        if (path == '/api/v1/courses/1/pages') {
+          return json([
+            {
+              'url': 'intro',
+              'title': 'Intro',
+              'body': '<a href="/courses/1/files/10/download">A.pdf</a><a href="https://evil.test/files/99">private</a>',
+            },
+          ]);
+        }
+        if (path == '/api/v1/courses/1/pages/week-1') {
+          return json({
+            'title': 'Week 1',
+            'body': '<a data-api-endpoint="https://school.edu/api/v1/files/11" href="#">B.docx</a>',
+          });
+        }
+        if (path == '/api/v1/courses/1/discussion_topics') {
+          if (r.uri.queryParameters['only_announcements'] == 'true') {
+            return json([
+              {
+                'id': 4,
+                'title': 'Notice',
+                'attachments': [
+                  {'url': '/courses/1/files/13/download', 'filename': 'D.pptx'},
+                ],
+              },
+            ]);
+          }
+          return json([
+            {
+              'id': 3,
+              'title': 'Board',
+              'message': '<a href="/courses/1/files/10">duplicate</a>',
+            },
+          ]);
+        }
+        if (path == '/api/v1/courses/1/discussion_topics/3/view') {
+          return json({
+            'view': [
+              {'message': '<a href="/files/12/download">C.hwp</a>'},
+            ],
+          });
+        }
+        if (path == '/api/v1/courses/1/assignments') {
+          return json([
+            {
+              'name': 'Task',
+              'description': '<a href="/courses/1/files/14/download">E.pdf</a>',
+            },
+          ]);
+        }
+        final id = RegExp(r'/api/v1/courses/1/files/(\d+)$')
+            .firstMatch(path)
+            ?.group(1);
+        if (id != null) {
+          return json({
+            'id': int.parse(id),
+            'display_name': 'file_$id.pdf',
+            'url': 'https://school.edu/files/$id/download',
+          });
+        }
+        throw StateError('Unexpected request: $path');
+      });
+    final report = CanvasImportReport();
+    final files = await CanvasProvider(
+      'https://school.edu',
+      'fake',
+      client: dio,
+    ).discoverFiles('1', report, (_) {});
+    expect(files.map((f) => '${f['id']}').toSet(), {
+      '10',
+      '11',
+      '12',
+      '13',
+      '14',
+    });
+    expect(
+      files.firstWhere((f) => f['id'] == 10)['_locations'],
+      contains('게시판 · Board'),
+    );
+    expect(requested.every((host) => host == 'school.edu'), isTrue);
+    expect(report.warnings, isEmpty);
+  });
   test('module download rejects a successful HTTP login page', () async {
     final root = await Directory.systemTemp.createTemp('fenru-login-test-');
     final dio = Dio()

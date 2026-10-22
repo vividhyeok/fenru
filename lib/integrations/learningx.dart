@@ -147,7 +147,12 @@ class LearningXProvider {
           final id = '${item['content_id']}';
           if (!RegExp(r'^\d+$').hasMatch(id)) continue;
           try {
-            files['canvas:$id'] = await object('/api/v1/files/$id');
+            files['canvas:$id'] = {
+              ...await object('/api/v1/files/$id'),
+              '_locations': [
+                '주차 학습 · ${module['title'] ?? module['name'] ?? ''}',
+              ],
+            };
           } on UserFacingException {
             warnings.add('LearningX 첨부자료 한 개의 파일 정보에 접근할 수 없습니다.');
           }
@@ -164,6 +169,9 @@ class LearningXProvider {
               'ppt',
               'doc',
               'hwp',
+              'docx',
+              'pptx',
+              'hwpx',
             ].contains(detail['content_type'])) {
           continue;
         }
@@ -232,6 +240,9 @@ class LearningXProvider {
                 '$slug.pdf',
             'updated_at': detail['updated_at'] ?? content['updated_at'],
             'url': downloadUri.toString(),
+            '_locations': [
+              '주차 학습 · ${module['title'] ?? module['name'] ?? ''}',
+            ],
           };
         } on DioException catch (e) {
           if (![401, 403, 404].contains(e.response?.statusCode)) rethrow;

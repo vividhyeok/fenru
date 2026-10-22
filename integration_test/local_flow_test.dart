@@ -11,6 +11,8 @@ import 'package:fenru/main.dart';
 import 'package:fenru/core/database.dart';
 import 'package:fenru/core/workspace.dart';
 import 'package:fenru/features/ai/study_context.dart';
+import 'package:fenru/features/reader/ink.dart';
+import 'package:fenru/ui/note_editor.dart';
 
 import '../test/pdf_fixture.dart';
 
@@ -64,6 +66,29 @@ void main() {
     expect(evidence.excerpts.first.documentId, doc.id);
     expect(evidence.excerpts.first.page, 1);
     expect(evidence.referenceText, contains('Fenru learning workspace'));
+    await tester.tap(find.byTooltip('읽기 · 필기 도구'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('펜 필기').last);
+    await tester.pumpAndSettle();
+    final visiblePage = tester
+        .getRect(find.byType(InkSurface).first)
+        .intersect(tester.getRect(find.byType(PdfViewer)));
+    final pen = await tester.startGesture(
+      visiblePage.center - const Offset(40, 0),
+    );
+    await pen.moveBy(const Offset(40, 20));
+    await pen.moveBy(const Offset(40, -30));
+    await pen.up();
+    await tester.pumpAndSettle();
+    expect(w.ofKind('annotation').single.text('type'), 'ink');
+    expect(
+      (w.ofKind('annotation').single.data['points'] as List).length,
+      greaterThan(1),
+    );
+    await tester.tap(find.byTooltip('읽기 · 필기 도구'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('읽기 · 선택 · 이동'));
+    await tester.pumpAndSettle();
     final zoomBefore = controller.currentZoom;
     await tester.ensureVisible(find.byTooltip('확대'));
     await tester.tap(find.byTooltip('확대'));
@@ -107,15 +132,21 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('선택 영역 하이라이트'));
     await tester.pumpAndSettle();
-    expect(w.ofKind('annotation').single.text('type'), 'highlight');
+    expect(
+      w.ofKind('annotation').where((a) => a.text('type') == 'highlight').length,
+      1,
+    );
     await tester.ensureVisible(find.byTooltip('주석 실행 취소'));
     await tester.tap(find.byTooltip('주석 실행 취소'));
     await tester.pumpAndSettle();
-    expect(w.ofKind('annotation'), isEmpty);
+    expect(w.ofKind('annotation').single.text('type'), 'ink');
     await tester.ensureVisible(find.byTooltip('주석 다시 실행'));
     await tester.tap(find.byTooltip('주석 다시 실행'));
     await tester.pumpAndSettle();
-    expect(w.ofKind('annotation').single.text('type'), 'highlight');
+    expect(
+      w.ofKind('annotation').where((a) => a.text('type') == 'highlight').length,
+      1,
+    );
     await tester.tap(find.byTooltip('책갈피 추가'));
     await tester.pumpAndSettle();
     expect(
@@ -123,8 +154,29 @@ void main() {
           .ofKind('annotation')
           .where((a) => a.text('documentId') == doc.id)
           .length,
-      2,
+      3,
     );
+    await tester.tap(find.byTooltip('자료 옆 정리 노트'));
+    await tester.pumpAndSettle();
+    final noteBody = find
+        .descendant(
+          of: find.byType(NoteEditor),
+          matching: find.byType(TextField),
+        )
+        .last;
+    await tester.enterText(
+      noteBody,
+      'My study summary: light energy becomes chemical energy.',
+    );
+    await tester.pump(const Duration(milliseconds: 700));
+    await tester.pumpAndSettle();
+    expect(w.ofKind('note').single.text('body'), contains('My study summary'));
+    // Narrow windows open a note route; wide windows keep it alongside the PDF.
+    if (MediaQuery.sizeOf(tester.element(find.byType(NoteEditor))).width <
+        1100) {
+      await tester.tap(find.byType(BackButton).first);
+      await tester.pumpAndSettle();
+    }
     await tester.tap(find.byType(BackButton).first);
     await tester.pumpAndSettle();
     await tester.pumpWidget(const SizedBox());
@@ -134,7 +186,11 @@ void main() {
       WorkspaceDatabase(File('${root.path}/workspace.sqlite')),
     );
     await reopened.initialize();
-    expect(reopened.ofKind('annotation').length, 2);
+    expect(reopened.ofKind('annotation').length, 3);
+    expect(
+      reopened.ofKind('note').single.text('body'),
+      contains('My study summary'),
+    );
     expect(
       reopened
           .ofKind('annotation')

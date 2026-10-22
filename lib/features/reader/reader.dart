@@ -11,6 +11,9 @@ import '../../core/models.dart';
 import '../../core/workspace.dart';
 import '../../ui/dialogs.dart';
 import '../ai/chat.dart';
+import '../../ui/note_editor.dart';
+import 'ink.dart';
+import '../../integrations/pdf_conversion.dart';
 
 class DocumentReader extends StatefulWidget {
   const DocumentReader({
@@ -25,11 +28,34 @@ class DocumentReader extends StatefulWidget {
 }
 
 class _DocumentReaderState extends State<DocumentReader> {
+  WorkspaceObject get document {
+    final original =
+        widget.workspace.byId(widget.document.id) ?? widget.document;
+    final pdf = widget.workspace.byId(original.text('pdfDocumentId'));
+    return pdf != null && !pdf.deleted ? pdf : original;
+  }
+
+  bool converting = false;
+  Future<void> convertDocument() async {
+    if (converting) return;
+    setState(() => converting = true);
+    await safely(() async {
+      await PdfConversion(widget.workspace).convert(document);
+    });
+    if (mounted) setState(() => converting = false);
+  }
+
   final controller = PdfViewerController();
-  late int page = widget.document.number('page', 1);
+  late int page = document.number('page', 1);
   Timer? pageTimer;
   bool panel = false;
   bool showAI = true, useCurrentPage = false, searchOpen = false;
+  bool questionFocus = false;
+  String inkTool = 'read';
+  double penWidth = 2;
+  int penColor = 0xff234b80;
+  bool noteMode = false;
+  WorkspaceObject? studyNote;
   late int readingTheme =
       (int.tryParse(widget.workspace.preferences['reader.theme'] ?? '') ?? 0)
           .clamp(0, 2);
@@ -38,7 +64,7 @@ class _DocumentReaderState extends State<DocumentReader> {
         widget.workspace.preferences['reader.highlightColor'] ?? '',
       ) ??
       0xffffd54f;
-  double aiWidth = 380;
+  double aiWidth = 420;
   List<PdfOutlineNode> outline = [];
   final searchInput = TextEditingController();
   final searchFocus = FocusNode();
@@ -79,13 +105,13 @@ class _DocumentReaderState extends State<DocumentReader> {
           'title':
               '${type == 'underline' ? '밑줄' : '하이라이트'} · ${range.pageNumber}페이지',
           'body': range.text,
-          'documentId': widget.document.id,
+          'documentId': document.id,
           'page': range.pageNumber,
           'type': type,
           'rectangles': rectangles,
           'start': range.start,
           'end': range.end,
-          'versionHash': widget.document.text('hash'),
+          'versionHash': document.text('hash'),
           'color': highlightColor,
         });
         created.add(annotation.id);
@@ -105,9 +131,13 @@ class _DocumentReaderState extends State<DocumentReader> {
             .ofKind('annotation')
             .where(
               (m) =>
-                  m.text('documentId') == widget.document.id &&
+                  m.text('documentId') == document.id &&
                   m.number('page') == pdfPage.pageNumber,
             )) {
+      if (mark.text('type') == 'ink') {
+        paintInk(canvas, pageRect, mark.data);
+        continue;
+      }
       for (final coordinates in mark.data['rectangles'] as List? ?? []) {
         final values = (coordinates as List)
             .map((v) => (v as num).toDouble())
@@ -154,7 +184,7 @@ class _DocumentReaderState extends State<DocumentReader> {
     searchInput.dispose();
     searchFocus.dispose();
     if (pageTimer?.isActive == true) {
-      widget.workspace.recordPage(widget.document, page).catchError((_) {});
+      widget.workspace.recordPage(document, page).catchError((_) {});
     }
     pageTimer?.cancel();
     super.dispose();
@@ -169,12 +199,64 @@ class _DocumentReaderState extends State<DocumentReader> {
       await widget.workspace.save('annotation', {
         'title': type == 'bookmark' ? body : '페이지 $page 메모',
         'body': body,
-        'documentId': widget.document.id,
+        'documentId': document.id,
         'page': page,
         'type': type,
       });
     });
   }
+
+  Future<void> openStudyNote() async {
+    await safely(() async {
+      studyNote ??= widget.workspace
+          .ofKind('note')
+          .where(
+            (n) =>
+                n.text('documentId') == document.id && n.flag('readerNotebook'),
+          )
+          .firstOrNull;
+      studyNote ??= await widget.workspace.save('note', {
+        'title': '${document.title} · 정리 노트',
+        'body': '',
+        'documentId': document.id,
+        'readerNotebook': true,
+      });
+      if (!mounted) return;
+      if (MediaQuery.sizeOf(context).width < 1100) {
+        await Navigator.push(
+          context,
+          MaterialPageRoute<void>(
+            builder: (_) =>
+                NoteEditor(workspace: widget.workspace, note: studyNote!),
+          ),
+        );
+      } else {
+        setState(() {
+          showAI = true;
+          noteMode = true;
+        });
+      }
+    });
+  }
+
+  Widget studyPanel() => IndexedStack(
+    index: noteMode && studyNote != null ? 1 : 0,
+    children: [
+      chat(embedded: true),
+      if (studyNote != null)
+        NoteEditor(
+          key: ValueKey(studyNote!.id),
+          workspace: widget.workspace,
+          note: studyNote!,
+          embedded: true,
+          expanded: questionFocus,
+          onToggleExpanded: () =>
+              setState(() => questionFocus = !questionFocus),
+        )
+      else
+        const SizedBox.shrink(),
+    ],
+  );
 
   Future<DocumentContext?> documentContext() async {
     if (pinnedSelection != null) return pinnedSelection;
@@ -197,24 +279,35 @@ class _DocumentReaderState extends State<DocumentReader> {
         : (await controller.document.pages[page - 1].loadText())?.fullText ??
               '';
     return DocumentContext(
-      documentId: widget.document.id,
-      title: widget.document.title,
+      documentId: document.id,
+      title: document.title,
       page: ranges.isNotEmpty ? ranges.first.pageNumber : page,
       text: text,
-      versionHash: widget.document.text('hash'),
+      versionHash: document.text('hash'),
     );
   }
 
   Widget chat({bool embedded = false}) => AIChat(
     workspace: widget.workspace,
-    documentId: widget.document.id,
-    scopeTitle: widget.document.title,
+    documentId: document.id,
+    scopeTitle: document.title,
     contextLabel: useCurrentPage ? '선택 문장 또는 현재 페이지 포함' : '이 자료 전체에서 근거 찾기',
     contextBuilder: useCurrentPage ? documentContext : null,
     requestDocument: true,
     embedded: embedded,
+    currentPageOnly: embedded && document.text('extension') == '.pdf'
+        ? useCurrentPage
+        : null,
+    onContextModeChanged: (value) => setState(() {
+      useCurrentPage = value;
+      pinnedSelection = null;
+    }),
+    expanded: questionFocus,
+    onToggleExpanded: embedded
+        ? () => setState(() => questionFocus = !questionFocus)
+        : null,
     onCitation: (id, targetPage) {
-      if (id == widget.document.id && controller.isReady) {
+      if (id == document.id && controller.isReady) {
         if (!embedded) Navigator.pop(context);
         controller.goToPage(pageNumber: targetPage);
       }
@@ -226,7 +319,7 @@ class _DocumentReaderState extends State<DocumentReader> {
     builder: (_, _) {
       final marks = widget.workspace
           .ofKind('annotation')
-          .where((o) => o.text('documentId') == widget.document.id)
+          .where((o) => o.text('documentId') == document.id)
           .toList();
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -505,6 +598,83 @@ class _DocumentReaderState extends State<DocumentReader> {
       scrollDirection: Axis.horizontal,
       child: Row(
         children: [
+          PopupMenuButton<String>(
+            tooltip: '읽기 · 필기 도구',
+            onSelected: (value) => setState(() => inkTool = value),
+            itemBuilder: (_) => const [
+              PopupMenuItem(value: 'read', child: Text('읽기 · 선택 · 이동')),
+              PopupMenuItem(value: 'pen', child: Text('펜 필기')),
+              PopupMenuItem(value: 'marker', child: Text('자유 형광펜')),
+              PopupMenuItem(value: 'line', child: Text('직선 밑줄')),
+            ],
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Row(
+                children: [
+                  Icon(
+                    inkTool == 'read'
+                        ? Icons.pan_tool_outlined
+                        : inkTool == 'marker'
+                        ? Icons.highlight
+                        : inkTool == 'line'
+                        ? Icons.format_underlined
+                        : Icons.draw_outlined,
+                    color: inkTool == 'read'
+                        ? null
+                        : Theme.of(context).colorScheme.primary,
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    {
+                      'read': '읽기',
+                      'pen': '펜 필기',
+                      'marker': '형광펜',
+                      'line': '밑줄',
+                    }[inkTool]!,
+                  ),
+                  const Icon(Icons.arrow_drop_down),
+                ],
+              ),
+            ),
+          ),
+          if (inkTool != 'read') ...[
+            PopupMenuButton<int>(
+              tooltip: '펜 색상',
+              icon: Icon(Icons.circle, color: Color(penColor)),
+              onSelected: (value) => setState(() => penColor = value),
+              itemBuilder: (_) => [
+                for (final color in [
+                  0xff234b80,
+                  0xff212121,
+                  0xffe53935,
+                  0xffffd54f,
+                  0xff81c784,
+                ])
+                  PopupMenuItem(
+                    value: color,
+                    child: Icon(Icons.circle, color: Color(color)),
+                  ),
+              ],
+            ),
+            PopupMenuButton<double>(
+              tooltip: '펜 굵기',
+              icon: const Icon(Icons.line_weight),
+              onSelected: (value) => setState(() => penWidth = value),
+              itemBuilder: (_) => [
+                for (final width in [1.0, 2.0, 4.0])
+                  PopupMenuItem(
+                    value: width,
+                    child: Text(
+                      '${width.toInt()} · ${width == 1
+                          ? '가늘게'
+                          : width == 2
+                          ? '보통'
+                          : '굵게'}',
+                    ),
+                  ),
+              ],
+            ),
+          ],
           IconButton(
             tooltip: '페이지 · 목차 · 주석',
             onPressed: openNavigation,
@@ -705,6 +875,8 @@ class _DocumentReaderState extends State<DocumentReader> {
     controller: controller,
     initialPageNumber: page,
     params: PdfViewerParams(
+      panEnabled: inkTool == 'read',
+      textSelectionParams: PdfTextSelectionParams(enabled: inkTool == 'read'),
       onViewerReady: (_, _) {
         if (searcher == null) {
           searcher = PdfTextSearcher(controller)..addListener(searchChanged);
@@ -720,6 +892,36 @@ class _DocumentReaderState extends State<DocumentReader> {
       pagePaintCallbacks: [
         paintMarks,
         if (searcher != null) searcher!.pageTextMatchPaintCallback,
+      ],
+      pageOverlaysBuilder: (_, rect, pdfPage) => [
+        if (inkTool != 'read')
+          Positioned.fill(
+            child: InkSurface(
+              key: ValueKey('ink-${pdfPage.pageNumber}-$inkTool'),
+              tool: inkTool,
+              color: penColor,
+              width: penWidth,
+              onSave: (stroke) => safely(() async {
+                final mark = await widget.workspace.save('annotation', {
+                  ...stroke,
+                  'title':
+                      '${inkTool == 'pen'
+                          ? '펜 필기'
+                          : inkTool == 'marker'
+                          ? '형광펜'
+                          : '밑줄'} · ${pdfPage.pageNumber}페이지',
+                  'type': 'ink',
+                  'documentId': document.id,
+                  'page': pdfPage.pageNumber,
+                  'versionHash': document.text('hash'),
+                });
+                undoMarks.add([mark.id]);
+                redoMarks.clear();
+                controller.invalidate();
+                if (mounted) setState(() {});
+              }),
+            ),
+          ),
       ],
       customizeContextMenuItems: (params, items) {
         final selection = params.textSelectionDelegate;
@@ -764,8 +966,7 @@ class _DocumentReaderState extends State<DocumentReader> {
   );
   @override
   Widget build(BuildContext context) {
-    final doc = widget.document,
-        file = widget.workspace.fileFor(widget.document);
+    final doc = document, file = widget.workspace.fileFor(document);
     final pdf = doc.text('extension') == '.pdf';
     final wide = MediaQuery.sizeOf(context).width >= 1100;
     return CallbackShortcuts(
@@ -797,6 +998,11 @@ class _DocumentReaderState extends State<DocumentReader> {
             title: Text(doc.title, overflow: TextOverflow.ellipsis),
             actions: [
               IconButton(
+                tooltip: '자료 옆 정리 노트',
+                onPressed: openStudyNote,
+                icon: const Icon(Icons.edit_note),
+              ),
+              IconButton(
                 tooltip: '책갈피 추가',
                 icon: const Icon(Icons.bookmark_add_outlined),
                 onPressed: () => addMark('bookmark'),
@@ -804,7 +1010,11 @@ class _DocumentReaderState extends State<DocumentReader> {
               TextButton.icon(
                 onPressed: () {
                   if (wide) {
-                    setState(() => showAI = !showAI);
+                    setState(() {
+                      showAI = noteMode || !showAI;
+                      noteMode = false;
+                      if (!showAI) questionFocus = false;
+                    });
                   } else {
                     openQuestions(chooseScope: true);
                   }
@@ -846,8 +1056,8 @@ class _DocumentReaderState extends State<DocumentReader> {
           ),
           body: Column(
             children: [
-              if (pdf) tools(),
-              if (pdf && searchOpen)
+              if (pdf && !(wide && showAI && questionFocus)) tools(),
+              if (pdf && searchOpen && !(wide && showAI && questionFocus))
                 Padding(
                   padding: const EdgeInsets.symmetric(
                     horizontal: 16,
@@ -908,74 +1118,73 @@ class _DocumentReaderState extends State<DocumentReader> {
               Expanded(
                 child: Row(
                   children: [
-                    if (pdf && wide && panel) ...[
+                    if (pdf && wide && panel && !(showAI && questionFocus)) ...[
                       SizedBox(width: 250, child: navigation()),
                       const VerticalDivider(width: 1),
                     ],
                     Expanded(
-                      child: pdf
-                          ? filteredPdf(file, doc)
-                          : _FilePreview(
-                              file: file,
-                              extension: doc.text('extension'),
-                            ),
+                      key: const ValueKey('reader-document'),
+                      child: Offstage(
+                        offstage: wide && showAI && questionFocus,
+                        child: OverflowBox(
+                          minWidth: wide && showAI && questionFocus
+                              ? (MediaQuery.sizeOf(context).width - aiWidth - 8)
+                                    .clamp(320, double.infinity)
+                              : null,
+                          maxWidth: wide && showAI && questionFocus
+                              ? (MediaQuery.sizeOf(context).width - aiWidth - 8)
+                                    .clamp(320, double.infinity)
+                              : null,
+                          child: pdf
+                              ? filteredPdf(file, doc)
+                              : _FilePreview(
+                                  file: file,
+                                  extension: doc.text('extension'),
+                                  conversionError: doc.text('conversionError'),
+                                  converting: converting,
+                                  onConvert: PdfConversion.supports(doc)
+                                      ? convertDocument
+                                      : null,
+                                ),
+                        ),
+                      ),
                     ),
-                    if (wide && showAI) ...[
+                    if (wide) ...[
                       GestureDetector(
                         behavior: HitTestBehavior.opaque,
-                        onHorizontalDragUpdate: (drag) => setState(
-                          () => aiWidth = (aiWidth - drag.delta.dx).clamp(
-                            320,
-                            MediaQuery.sizeOf(context).width * .45,
-                          ),
-                        ),
-                        child: const MouseRegion(
+                        onHorizontalDragUpdate: questionFocus
+                            ? null
+                            : (drag) => setState(
+                                () => aiWidth = (aiWidth - drag.delta.dx).clamp(
+                                  320,
+                                  MediaQuery.sizeOf(context).width * .55,
+                                ),
+                              ),
+                        child: MouseRegion(
                           cursor: SystemMouseCursors.resizeLeftRight,
                           child: SizedBox(
-                            width: 8,
-                            child: VerticalDivider(width: 1),
+                            width: showAI ? 8 : 0,
+                            child: const VerticalDivider(width: 1),
                           ),
                         ),
                       ),
                       SizedBox(
-                        width: aiWidth,
-                        child: Column(
-                          children: [
-                            Padding(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 12,
+                        key: const ValueKey('reader-question-panel'),
+                        width: !showAI
+                            ? 0
+                            : questionFocus
+                            ? MediaQuery.sizeOf(context).width - 8
+                            : aiWidth.clamp(
+                                320,
+                                MediaQuery.sizeOf(context).width * .55,
                               ),
-                              child: Row(
-                                children: [
-                                  const Text('참고 범위'),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: DropdownButton<bool>(
-                                      isExpanded: true,
-                                      value: useCurrentPage,
-                                      onChanged: pdf
-                                          ? (value) => setState(() {
-                                              useCurrentPage = value ?? false;
-                                              pinnedSelection = null;
-                                            })
-                                          : null,
-                                      items: const [
-                                        DropdownMenuItem(
-                                          value: false,
-                                          child: Text('자료 전체'),
-                                        ),
-                                        DropdownMenuItem(
-                                          value: true,
-                                          child: Text('선택 문장 / 현재 페이지'),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            Expanded(child: chat(embedded: true)),
-                          ],
+                        child: Offstage(
+                          offstage: !showAI,
+                          child: OverflowBox(
+                            minWidth: !showAI ? aiWidth : null,
+                            maxWidth: !showAI ? aiWidth : null,
+                            child: studyPanel(),
+                          ),
                         ),
                       ),
                     ],
@@ -984,7 +1193,7 @@ class _DocumentReaderState extends State<DocumentReader> {
               ),
             ],
           ),
-          bottomNavigationBar: pdf
+          bottomNavigationBar: pdf && !(wide && showAI && questionFocus)
               ? SafeArea(
                   child: Padding(
                     padding: const EdgeInsets.symmetric(
@@ -1019,7 +1228,16 @@ class _DocumentReaderState extends State<DocumentReader> {
 }
 
 class _FilePreview extends StatelessWidget {
-  const _FilePreview({required this.file, required this.extension});
+  const _FilePreview({
+    required this.file,
+    required this.extension,
+    this.onConvert,
+    this.conversionError = '',
+    this.converting = false,
+  });
+  final VoidCallback? onConvert;
+  final String conversionError;
+  final bool converting;
   final File file;
   final String extension;
   @override
@@ -1065,6 +1283,16 @@ class _FilePreview extends StatelessWidget {
               '파일이 안전하게 보관되었습니다.\n이 형식은 외부 앱에서 열 수 있습니다.',
               textAlign: TextAlign.center,
             ),
+            if (onConvert != null) ...[
+              const SizedBox(height: 16),
+              if (conversionError.isNotEmpty)
+                Text(conversionError, textAlign: TextAlign.center),
+              FilledButton.icon(
+                onPressed: converting ? null : onConvert,
+                icon: const Icon(Icons.picture_as_pdf_outlined),
+                label: Text(converting ? 'PDF 변환 중…' : 'PDF로 변환 · 재시도'),
+              ),
+            ],
             const SizedBox(height: 16),
             FilledButton(
               onPressed: () async {

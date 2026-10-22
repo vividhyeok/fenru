@@ -199,6 +199,7 @@ void main() {
         find.byType(TextField).last,
         'Explain photosynthesis',
       );
+      await tester.pump();
       await tester.tap(find.byTooltip('질문 보내기'));
       for (var i = 0; i < 30 && w.ofKind('message').length < 2; i++) {
         await tester.runAsync(
@@ -221,6 +222,8 @@ void main() {
         (w.ofKind('message').last.data['sources'] as List).single['documentId'],
         own.id,
       );
+      await tester.tap(find.text('참고한 자료 1개'));
+      await tester.pumpAndSettle();
       expect(find.text('Plants.pdf · 1쪽'), findsOneWidget);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(

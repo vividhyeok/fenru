@@ -9,6 +9,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../core/models.dart';
 import '../core/workspace.dart';
+import '../integrations/pdf_conversion.dart';
 import '../features/backup/backup_service.dart';
 import '../features/reader/reader.dart';
 import '../features/ai/chat.dart';
@@ -82,7 +83,7 @@ class _FenruShellState extends State<FenruShell> {
   Future<void> importPaths(List<String> paths) => run(() async {
     int count = 0;
     for (final path in paths) {
-      await w.importFile(path, folder: folder);
+      await importStudyFile(w, path, folder: folder);
       if (mounted) {
         setState(() => status = '${++count} / ${paths.length}개 파일 가져옴');
       }
@@ -107,7 +108,7 @@ class _FenruShellState extends State<FenruShell> {
           await file.readAsByteStream().cast<List<int>>().pipe(
             target.openWrite(),
           );
-          await w.importFile(target.path, folder: folder);
+          await importStudyFile(w, target.path, folder: folder);
         } finally {
           await temporary.delete(recursive: true);
         }
@@ -333,7 +334,13 @@ class _FenruShellState extends State<FenruShell> {
               ),
               subtitle: Text(
                 o.kind == 'document'
-                    ? '${o.text('folder').isEmpty ? '분류 없음' : o.text('folder')}  ·  ${o.text('tags')}'
+                    ? '${o.text('folder').isEmpty ? '분류 없음' : o.text('folder')}  ·  ${o.text('conversionStatus') == 'failed'
+                          ? 'PDF 변환 확인 필요 · 원본 보관됨'
+                          : o.text('pdfDocumentId').isNotEmpty
+                          ? 'PDF로 열기 · 원본 보관됨'
+                          : o.text('derivedFrom').isNotEmpty
+                          ? '원본에서 변환한 PDF'
+                          : o.text('tags')}'
                     : o.text('body').replaceAll('\n', ' '),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
@@ -1009,7 +1016,7 @@ class _FenruShellState extends State<FenruShell> {
       ),
       const SizedBox(height: 20),
       const Text(
-        'Fenru 0.1.0-alpha.5 · 개발 프리릴리스\n로컬 데이터는 자동 저장됩니다. 별도 계정이나 추적 SDK를 사용하지 않습니다.',
+        'Fenru 0.1.0-alpha.6 · 개발 프리릴리스\n로컬 데이터는 자동 저장됩니다. 별도 계정이나 추적 SDK를 사용하지 않습니다.',
       ),
     ],
   );
