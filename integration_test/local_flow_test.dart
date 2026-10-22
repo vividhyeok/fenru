@@ -128,7 +128,7 @@ void main() {
       await controller.textSelectionDelegate.getSelectedText(),
       contains('Fenru learning workspace'),
     );
-    await tester.tap(find.byType(PopupMenuButton<String>).first);
+    await tester.tap(find.byKey(const ValueKey('reader-document-menu')));
     await tester.pumpAndSettle();
     await tester.tap(find.text('선택 영역 하이라이트'));
     await tester.pumpAndSettle();

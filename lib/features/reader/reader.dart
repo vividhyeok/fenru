@@ -309,6 +309,7 @@ class _DocumentReaderState extends State<DocumentReader> {
     onCitation: (id, targetPage) {
       if (id == document.id && controller.isReady) {
         if (!embedded) Navigator.pop(context);
+        if (embedded && questionFocus) setState(() => questionFocus = false);
         controller.goToPage(pageNumber: targetPage);
       }
     },
@@ -386,9 +387,13 @@ class _DocumentReaderState extends State<DocumentReader> {
                               }
                             }
                           },
-                          itemBuilder: (_) => const [
-                            PopupMenuItem(value: 'edit', child: Text('수정')),
-                            PopupMenuItem(
+                          itemBuilder: (_) => [
+                            if (mark.text('type') != 'ink')
+                              const PopupMenuItem(
+                                value: 'edit',
+                                child: Text('수정'),
+                              ),
+                            const PopupMenuItem(
                               value: 'delete',
                               child: Text('휴지통으로'),
                             ),
@@ -640,8 +645,17 @@ class _DocumentReaderState extends State<DocumentReader> {
           if (inkTool != 'read') ...[
             PopupMenuButton<int>(
               tooltip: '펜 색상',
-              icon: Icon(Icons.circle, color: Color(penColor)),
-              onSelected: (value) => setState(() => penColor = value),
+              icon: Icon(
+                Icons.circle,
+                color: Color(inkTool == 'marker' ? highlightColor : penColor),
+              ),
+              onSelected: (value) => setState(() {
+                if (inkTool == 'marker') {
+                  highlightColor = value;
+                } else {
+                  penColor = value;
+                }
+              }),
               itemBuilder: (_) => [
                 for (final color in [
                   0xff234b80,
@@ -899,7 +913,7 @@ class _DocumentReaderState extends State<DocumentReader> {
             child: InkSurface(
               key: ValueKey('ink-${pdfPage.pageNumber}-$inkTool'),
               tool: inkTool,
-              color: penColor,
+              color: inkTool == 'marker' ? highlightColor : penColor,
               width: penWidth,
               onSave: (stroke) => safely(() async {
                 final mark = await widget.workspace.save('annotation', {
@@ -1023,6 +1037,8 @@ class _DocumentReaderState extends State<DocumentReader> {
                 label: const Text('자료 질문'),
               ),
               PopupMenuButton<String>(
+                key: const ValueKey('reader-document-menu'),
+                tooltip: '자료 메뉴',
                 onSelected: (value) async {
                   if (value == 'external') {
                     await OpenFilex.open(file.path);

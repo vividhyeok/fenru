@@ -526,6 +526,7 @@ class CanvasProvider implements LmsProvider {
       if (parsed == null) return;
       final uri = base.resolveUri(parsed);
       if (uri.scheme != 'https' ||
+          uri.host.isEmpty ||
           uri.origin != base.origin ||
           uri.userInfo.isNotEmpty) {
         return;
