@@ -5,6 +5,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:path/path.dart' as p;
 
 import '../../integrations/pdf_conversion.dart';
+import '../../ui/dialogs.dart';
 
 import '../../core/models.dart';
 import '../../core/workspace.dart';
@@ -76,6 +77,124 @@ class _CourseWorkspaceState extends State<CourseWorkspace> {
 
   String query = '', contentFilter = '전체';
   double chatWidth = 420;
+
+  Future<void> searchCourseText() async {
+    final input = (await askText(context, '과목 본문 검색'))?.trim();
+    if (!mounted || input == null || input.isEmpty) return;
+    final needle = input.toLowerCase();
+    var cancelled = false;
+    final service = StudyContextService(
+      workspace,
+      isCancelled: () => cancelled,
+    );
+    final documents = StudyContextService.courseDocuments(workspace, course);
+    Future<
+      ({
+        List<({WorkspaceObject doc, int page, String excerpt})> hits,
+        int skipped,
+      })
+    >
+    search() async {
+      final hits = <({WorkspaceObject doc, int page, String excerpt})>[];
+      var skipped = 0;
+      for (final doc in documents) {
+        if (cancelled || hits.length >= 100) break;
+        if (!{
+          '.pdf',
+          '.txt',
+          '.md',
+          '.markdown',
+          '.csv',
+        }.contains(doc.text('extension'))) {
+          skipped++;
+          continue;
+        }
+        final List<String> pages;
+        try {
+          pages = await service.pages(doc);
+        } catch (_) {
+          if (!cancelled) skipped++;
+          continue;
+        }
+        if (pages.every((page) => page.trim().isEmpty)) skipped++;
+        for (final (index, page) in pages.indexed) {
+          if (cancelled || hits.length >= 100) break;
+          final text = page.replaceAll(RegExp(r'\s+'), ' ').trim();
+          final offset = text.toLowerCase().indexOf(needle);
+          if (offset < 0) continue;
+          final start = (offset - 36).clamp(0, text.length);
+          final end = (offset + input.length + 82).clamp(start, text.length);
+          hits.add((
+            doc: doc,
+            page: index + 1,
+            excerpt:
+                "${start > 0 ? '…' : ''}${text.substring(start, end)}${end < text.length ? '…' : ''}",
+          ));
+        }
+      }
+      return (hits: hits, skipped: skipped);
+    }
+
+    final result = search();
+    final hit = await showDialog<({WorkspaceObject doc, int page, String excerpt})>(
+      context: context,
+      builder: (dialog) => AlertDialog(
+        title: Text(
+          '본문 검색 · $input',
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+        ),
+        content: SizedBox(
+          width: 540,
+          height: 360,
+          child: FutureBuilder(
+            future: result,
+            builder: (context, snapshot) {
+              final results = snapshot.data;
+              if (snapshot.hasError) return const Text('본문을 검색하지 못했습니다.');
+              if (results == null) {
+                return const Center(child: CircularProgressIndicator());
+              }
+              return ListView(
+                children: [
+                  Text(
+                    '${results.hits.length >= 100 ? '처음 100개' : '${results.hits.length}개 결과'}'
+                    '${results.skipped == 0 ? '' : ' · 검색할 수 없는 자료 ${results.skipped}개'}',
+                  ),
+                  for (final hit in results.hits)
+                    ListTile(
+                      title: Text('${hit.doc.title} · ${hit.page}페이지'),
+                      subtitle: Text(hit.excerpt),
+                      onTap: () => Navigator.pop(dialog, hit),
+                    ),
+                ],
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialog),
+            child: const Text('닫기'),
+          ),
+        ],
+      ),
+    );
+    cancelled = true;
+    if (hit != null && mounted) {
+      await Navigator.push(
+        context,
+        MaterialPageRoute<void>(
+          builder: (_) => DocumentReader(
+            workspace: workspace,
+            document: hit.doc,
+            initialPage: hit.page,
+          ),
+        ),
+      );
+    }
+  }
+
   Widget chat({bool embedded = false}) => AIChat(
     key: ValueKey('course-chat-${course.id}'),
     workspace: workspace,
@@ -93,6 +212,11 @@ class _CourseWorkspaceState extends State<CourseWorkspace> {
     appBar: AppBar(
       title: Text(course.title, overflow: TextOverflow.ellipsis),
       actions: [
+        IconButton(
+          tooltip: '과목 본문 검색',
+          icon: const Icon(Icons.manage_search),
+          onPressed: searchCourseText,
+        ),
         TextButton.icon(
           onPressed: importing ? null : addFiles,
           icon: const Icon(Icons.upload_file),

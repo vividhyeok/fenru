@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -8,6 +10,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../core/models.dart';
 import '../core/workspace.dart';
 import '../features/notes/note_pdf.dart';
+import '../features/notes/note_links.dart';
 import '../features/reader/reader.dart';
 
 class NoteEditor extends StatefulWidget {
@@ -38,6 +41,139 @@ class _NoteEditorState extends State<NoteEditor> with WidgetsBindingObserver {
 
   String get displayTitle =>
       title.text.trim().isEmpty ? '제목 없는 노트' : title.text.trim();
+
+  List<WorkspaceObject> get notes => widget.workspace.ofKind('note');
+
+  Future<void> openNote(WorkspaceObject note) async {
+    if (note.id == widget.note.id) return;
+    await save();
+    if (!mounted || dirty || saving) return;
+    await Navigator.push(
+      context,
+      MaterialPageRoute<void>(
+        builder: (_) => NoteEditor(workspace: widget.workspace, note: note),
+      ),
+    );
+  }
+
+  Future<WorkspaceObject?> pickNote(
+    String title,
+    List<WorkspaceObject> candidates,
+  ) {
+    var query = '';
+    return showDialog<WorkspaceObject>(
+      context: context,
+      builder: (dialog) => StatefulBuilder(
+        builder: (_, update) {
+          final matches = candidates
+              .where((note) => note.title.toLowerCase().contains(query))
+              .toList();
+          return AlertDialog(
+            title: Text(title),
+            content: SizedBox(
+              width: 460,
+              height: 300,
+              child: Column(
+                children: [
+                  if (candidates.isNotEmpty)
+                    TextField(
+                      onChanged: (value) =>
+                          update(() => query = value.trim().toLowerCase()),
+                      decoration: const InputDecoration(hintText: '노트 제목 검색'),
+                    ),
+                  Expanded(
+                    child: matches.isEmpty
+                        ? const Center(child: Text('표시할 노트가 없습니다.'))
+                        : ListView.builder(
+                            itemCount: matches.length,
+                            itemBuilder: (_, index) => ListTile(
+                              title: Text(
+                                matches[index].title,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              onTap: () =>
+                                  Navigator.pop(dialog, matches[index]),
+                            ),
+                          ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialog),
+                child: const Text('닫기'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Future<void> insertNoteLink() async {
+    final selection = body.selection;
+    final target = await pickNote(
+      '노트 링크 추가',
+      notes.where((note) => note.id != widget.note.id).toList(),
+    );
+    if (target == null || !mounted) return;
+    final before = body.text;
+    final link = noteLinkMarkdown(target);
+    final start = selection.isValid
+        ? selection.start.clamp(0, before.length)
+        : before.length;
+    final end = selection.isValid
+        ? selection.end.clamp(start, before.length)
+        : before.length;
+    final inserted =
+        start == before.length && before.isNotEmpty && !before.endsWith('\n')
+        ? '\n$link'
+        : link;
+    body.value = TextEditingValue(
+      text: before.replaceRange(start, end, inserted),
+      selection: TextSelection.collapsed(offset: start + inserted.length),
+    );
+    if (preview) setState(() => preview = false);
+    changed();
+  }
+
+  Future<void> showBacklinks() async {
+    final note = await pickNote(
+      '이 노트를 참조하는 노트',
+      findNoteBacklinks(widget.note, notes),
+    );
+    if (note != null && mounted) await openNote(note);
+  }
+
+  Future<void> saveMarkdown() async {
+    if (exporting) return;
+    setState(() => exporting = true);
+    try {
+      await save();
+      if (!mounted || dirty || saving) return;
+      final name = notePdfFileName(displayTitle);
+      final result = await FilePicker.saveFile(
+        dialogTitle: '노트를 Markdown으로 저장',
+        fileName: '${name.substring(0, name.length - 4)}.md',
+        mimeType: 'text/markdown',
+        bytes: utf8.encode(body.text),
+      );
+      if (result != null && mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Markdown을 저장했습니다.')));
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Markdown을 저장하지 못했습니다.')));
+      }
+    } finally {
+      if (mounted) setState(() => exporting = false);
+    }
+  }
 
   Future<void> makePdf({required bool addToLibrary}) async {
     if (exporting) return;
@@ -108,6 +244,7 @@ class _NoteEditorState extends State<NoteEditor> with WidgetsBindingObserver {
                   const SizedBox(height: 16),
                   MarkdownBody(
                     data: body.text,
+                    inlineSyntaxes: [WikiNoteLinkSyntax()],
                     styleSheet: base.copyWith(
                       p: theme.textTheme.bodyLarge?.copyWith(
                         fontSize: 16,
@@ -134,7 +271,25 @@ class _NoteEditorState extends State<NoteEditor> with WidgetsBindingObserver {
                     ),
                     onTapLink: (_, href, _) {
                       final uri = Uri.tryParse(href ?? '');
-                      if (uri != null &&
+                      if (uri?.scheme == 'fenru-note') {
+                        final target = resolveNoteLink(uri!, notes);
+                        if (target != null) {
+                          openNote(target);
+                        } else {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('연결된 노트를 찾을 수 없거나 제목이 중복됩니다.'),
+                            ),
+                          );
+                        }
+                      } else if (uri?.scheme == 'fenru-pdf' &&
+                          uri!.host == 'document' &&
+                          uri.pathSegments.length == 1) {
+                        openSource(
+                          uri.pathSegments.single,
+                          int.tryParse(uri.queryParameters['page'] ?? ''),
+                        );
+                      } else if (uri != null &&
                           (uri.scheme == 'https' || uri.scheme == 'http')) {
                         launchUrl(uri, mode: LaunchMode.externalApplication);
                       }
@@ -153,7 +308,7 @@ class _NoteEditorState extends State<NoteEditor> with WidgetsBindingObserver {
     await save();
     if (!mounted || dirty || saving) return;
     final doc = widget.workspace.byId(id);
-    if (doc == null || doc.deleted) {
+    if (doc == null || doc.deleted || doc.kind != 'document') {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('연결된 자료가 휴지통에 있거나 없습니다.')));
@@ -164,16 +319,8 @@ class _NoteEditorState extends State<NoteEditor> with WidgetsBindingObserver {
       MaterialPageRoute<void>(
         builder: (_) => DocumentReader(
           workspace: widget.workspace,
-          document: page == null
-              ? doc
-              : WorkspaceObject(
-                  id: doc.id,
-                  kind: doc.kind,
-                  data: {...doc.data, 'page': page},
-                  revision: doc.revision,
-                  device: doc.device,
-                  updated: doc.updated,
-                ),
+          document: doc,
+          initialPage: page,
         ),
       ),
     );
@@ -280,14 +427,43 @@ class _NoteEditorState extends State<NoteEditor> with WidgetsBindingObserver {
             },
             icon: Icon(preview ? Icons.edit_outlined : Icons.preview_outlined),
           ),
-          PopupMenuButton<bool>(
-            tooltip: '노트 PDF',
-            enabled: !exporting && body.text.trim().isNotEmpty,
-            icon: const Icon(Icons.picture_as_pdf_outlined),
-            onSelected: (value) => makePdf(addToLibrary: value),
-            itemBuilder: (_) => const [
-              PopupMenuItem(value: true, child: Text('PDF로 만들어 필기하기')),
-              PopupMenuItem(value: false, child: Text('PDF 파일로 저장')),
+          PopupMenuButton<String>(
+            tooltip: '노트 메뉴',
+            onSelected: (value) {
+              switch (value) {
+                case 'link':
+                  insertNoteLink();
+                case 'backlinks':
+                  showBacklinks();
+                case 'markdown':
+                  saveMarkdown();
+                case 'library':
+                  makePdf(addToLibrary: true);
+                case 'pdf':
+                  makePdf(addToLibrary: false);
+              }
+            },
+            itemBuilder: (_) => [
+              const PopupMenuItem(value: 'link', child: Text('노트 링크 추가')),
+              const PopupMenuItem(
+                value: 'backlinks',
+                child: Text('이 노트를 참조하는 노트'),
+              ),
+              PopupMenuItem(
+                value: 'markdown',
+                enabled: !exporting,
+                child: const Text('Markdown 파일로 저장'),
+              ),
+              PopupMenuItem(
+                value: 'library',
+                enabled: !exporting && body.text.trim().isNotEmpty,
+                child: const Text('PDF로 만들어 필기하기'),
+              ),
+              PopupMenuItem(
+                value: 'pdf',
+                enabled: !exporting && body.text.trim().isNotEmpty,
+                child: const Text('PDF 파일로 저장'),
+              ),
             ],
           ),
         ],

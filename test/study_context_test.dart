@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:dio/dio.dart';
@@ -13,6 +14,40 @@ import 'package:fenru/integrations/credentials.dart';
 import 'package:fenru/ui/shell.dart';
 
 void main() {
+  test(
+    'OCR fills blank indexed pages without replacing selectable text',
+    () async {
+      final root = await Directory.systemTemp.createTemp('fenru-ocr-cache-');
+      final workspace = Workspace(root, WorkspaceDatabase.memory());
+      await workspace.initialize();
+      try {
+        final original = await File('${root.path}/scan.pdf')
+            .writeAsString('fixture');
+        final doc = await workspace.importFile(original.path);
+        final hash = doc.text('hash');
+        final textIndex = await Directory('${root.path}/text-index').create();
+        await File('${textIndex.path}/$hash.json').writeAsString(
+          jsonEncode({
+            'version': 1,
+            'hash': hash,
+            'pages': ['원문', ''],
+          }),
+        );
+        final ocr = await Directory('${root.path}/ocr-v1/$hash')
+            .create(recursive: true);
+        await File('${ocr.path}/1.txt').writeAsString('원문을 대체하면 안 됨');
+        await File('${ocr.path}/2.txt').writeAsString('인식한 본문');
+        expect(await StudyContextService(workspace).pages(doc), [
+          '원문',
+          '인식한 본문',
+        ]);
+      } finally {
+        await workspace.close();
+        await root.delete(recursive: true);
+      }
+    },
+  );
+
   test('cancelled local retrieval does not read documents', () async {
     final root = await Directory.systemTemp.createTemp('fenru-context-cancel-');
     final w = Workspace(root, WorkspaceDatabase.memory());

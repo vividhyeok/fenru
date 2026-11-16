@@ -37,11 +37,16 @@ class FenruShell extends StatefulWidget {
   State<FenruShell> createState() => _FenruShellState();
 }
 
+class _CanvasImportStopped implements Exception {
+  const _CanvasImportStopped();
+}
+
 class _FenruShellState extends State<FenruShell> {
   Workspace get w => widget.workspace;
   int tab = 0;
   bool busy = false, dragging = false, trash = false;
   bool canvasPanelOpen = false, canvasImportRunning = false;
+  bool canvasStopRequested = false;
   final canvasActivity = <({String message, IconData icon})>[];
   final driveAuth = DriveAuth(SecureCredentials());
   late final AppLifecycleListener driveLifecycle;
@@ -263,6 +268,7 @@ class _FenruShellState extends State<FenruShell> {
   Future<void> run(
     Future<void> Function() action, {
     String label = '처리 중…',
+    String completion = '완료 · 모든 변경사항이 기기에 저장되었습니다.',
   }) async {
     if (busy) return;
     setState(() {
@@ -272,7 +278,7 @@ class _FenruShellState extends State<FenruShell> {
     });
     try {
       await action();
-      if (mounted) setState(() => status = '완료 · 모든 변경사항이 기기에 저장되었습니다.');
+      if (mounted) setState(() => status = completion);
     } catch (e) {
       if (mounted) {
         setState(
@@ -824,22 +830,175 @@ class _FenruShellState extends State<FenruShell> {
     );
   }
 
-  Future<void> addTask() async {
-    final title = await askText(context, '새 학습 일정');
-    if (title == null || title.trim().isEmpty || !mounted) return;
-    final due = await showDatePicker(
+  String plannerRange = '전체';
+  String plannerCourse = '';
+
+  Future<void> editTask([WorkspaceObject? task]) async {
+    var title = task?.title ?? '';
+    var due = DateTime.tryParse(task?.text('due') ?? '')?.toLocal();
+    var timed = task?.flag('hasDueTime') ?? false;
+    var course = task?.text('course') ?? '';
+    final courses = <String>{
+      '',
+      course,
+      for (final item in w.ofKind('course')) item.title,
+    }.toList()..sort();
+    final changes = await showDialog<Json>(
       context: context,
-      firstDate: DateTime(2020),
-      lastDate: DateTime(2100),
-      initialDate: DateTime.now(),
+      builder: (dialog) => StatefulBuilder(
+        builder: (_, update) {
+          final labels = MaterialLocalizations.of(dialog);
+          return AlertDialog(
+            title: Text(task == null ? '새 학습 일정' : '학습 일정 수정'),
+            content: SingleChildScrollView(
+              child: SizedBox(
+                width: 420,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    TextFormField(
+                      initialValue: title,
+                      autofocus: true,
+                      onChanged: (value) => update(() => title = value),
+                      decoration: const InputDecoration(labelText: '일정 이름'),
+                    ),
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<String>(
+                      initialValue: course,
+                      decoration: const InputDecoration(labelText: '과목'),
+                      isExpanded: true,
+                      items: [
+                        for (final item in courses)
+                          DropdownMenuItem(
+                            value: item,
+                            child: Text(item.isEmpty ? '과목 없음' : item),
+                          ),
+                      ],
+                      onChanged: (value) => update(() => course = value ?? ''),
+                    ),
+                    const SizedBox(height: 12),
+                    Wrap(
+                      spacing: 8,
+                      children: [
+                        OutlinedButton.icon(
+                          icon: const Icon(Icons.calendar_today_outlined),
+                          label: Text(
+                            due == null
+                                ? '날짜 선택'
+                                : labels.formatShortDate(due!),
+                          ),
+                          onPressed: () async {
+                            final current = due;
+                            final day = await showDatePicker(
+                              context: dialog,
+                              firstDate: DateTime(2020),
+                              lastDate: DateTime(2100, 12, 31),
+                              initialDate: current ?? DateTime.now(),
+                            );
+                            if (day == null || !dialog.mounted) return;
+                            update(
+                              () => due = DateTime(
+                                day.year,
+                                day.month,
+                                day.day,
+                                current?.hour ?? 0,
+                                current?.minute ?? 0,
+                              ),
+                            );
+                          },
+                        ),
+                        if (due != null) ...[
+                          OutlinedButton(
+                            onPressed: () async {
+                              final day = due!;
+                              final time = await showTimePicker(
+                                context: dialog,
+                                initialTime: timed
+                                    ? TimeOfDay.fromDateTime(day)
+                                    : TimeOfDay.now(),
+                              );
+                              if (time != null && dialog.mounted) {
+                                update(() {
+                                  due = DateTime(
+                                    day.year,
+                                    day.month,
+                                    day.day,
+                                    time.hour,
+                                    time.minute,
+                                  );
+                                  timed = true;
+                                });
+                              }
+                            },
+                            child: Text(
+                              timed
+                                  ? labels.formatTimeOfDay(
+                                      TimeOfDay.fromDateTime(due!),
+                                    )
+                                  : '시간 추가',
+                            ),
+                          ),
+                          IconButton(
+                            tooltip: '날짜 지우기',
+                            onPressed: () => update(() {
+                              due = null;
+                              timed = false;
+                            }),
+                            icon: const Icon(Icons.clear),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialog),
+                child: const Text('취소'),
+              ),
+              FilledButton(
+                onPressed: title.trim().isEmpty
+                    ? null
+                    : () => Navigator.pop(dialog, {
+                        'title': title.trim(),
+                        'due':
+                            (timed ? due?.toUtc() : due)?.toIso8601String() ??
+                            '',
+                        'hasDueTime': timed,
+                        'course': course,
+                      }),
+                child: const Text('저장'),
+              ),
+            ],
+          );
+        },
+      ),
     );
+    if (changes == null || !mounted) return;
     await run(() async {
+      final current = task == null ? null : w.byId(task.id);
+      if (task != null && (current == null || current.deleted)) return;
       await w.save('task', {
-        'title': title,
-        'due': due?.toIso8601String() ?? '',
         'done': false,
-      });
+        ...?current?.data,
+        ...changes,
+      }, id: current?.id);
     });
+  }
+
+  String taskDetails(WorkspaceObject task) {
+    final due = DateTime.tryParse(task.text('due'))?.toLocal();
+    final localizations = MaterialLocalizations.of(context);
+    return [
+      if (due != null) localizations.formatShortDate(due),
+      if (due != null &&
+          (task.flag('hasDueTime') || task.text('source').isNotEmpty))
+        localizations.formatTimeOfDay(TimeOfDay.fromDateTime(due)),
+      if (task.text('course').isNotEmpty) task.text('course'),
+    ].join(' · ');
   }
 
   Widget taskTile(WorkspaceObject task) => CheckboxListTile(
@@ -852,9 +1011,7 @@ class _FenruShellState extends State<FenruShell> {
         decoration: task.flag('done') ? TextDecoration.lineThrough : null,
       ),
     ),
-    subtitle: Text(
-      '${task.text('due').split('T').first}  ${task.text('course')}',
-    ),
+    subtitle: taskDetails(task).isEmpty ? null : Text(taskDetails(task)),
     onChanged: busy
         ? null
         : (done) => run(() async {
@@ -864,7 +1021,10 @@ class _FenruShellState extends State<FenruShell> {
       onSelected: (value) async {
         if (value == 'delete') {
           await deleteObjects([task]);
-        } else if (task.text('url').startsWith('https://')) {
+        } else if (value == 'edit') {
+          await editTask(task);
+        } else if (value == 'source' &&
+            task.text('url').startsWith('https://')) {
           await launchUrl(
             Uri.parse(task.text('url')),
             mode: LaunchMode.externalApplication,
@@ -872,6 +1032,8 @@ class _FenruShellState extends State<FenruShell> {
         }
       },
       itemBuilder: (_) => [
+        if (task.text('source').isEmpty)
+          const PopupMenuItem(value: 'edit', child: Text('일정 수정')),
         if (task.text('url').startsWith('https://'))
           const PopupMenuItem(value: 'source', child: Text('Canvas에서 보기')),
         const PopupMenuItem(value: 'delete', child: Text('휴지통으로 이동')),
@@ -879,25 +1041,88 @@ class _FenruShellState extends State<FenruShell> {
     ),
   );
   Widget planner() {
-    final tasks = w.ofKind('task')
-      ..sort((a, b) {
-        if (a.flag('done') != b.flag('done')) return a.flag('done') ? 1 : -1;
-        return a.text('due').compareTo(b.text('due'));
-      });
+    final all = w.ofKind('task');
+    final courses =
+        all
+            .map((task) => task.text('course'))
+            .where((course) => course.isNotEmpty)
+            .toSet()
+            .toList()
+          ..sort();
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final tomorrow = DateTime(now.year, now.month, now.day + 1);
+    final weekEnd = DateTime(now.year, now.month, now.day + 7);
+    DateTime? date(WorkspaceObject task) =>
+        DateTime.tryParse(task.text('due'))?.toLocal();
+    final tasks =
+        all.where((task) {
+          if (plannerCourse.isNotEmpty &&
+              courses.contains(plannerCourse) &&
+              task.text('course') != plannerCourse) {
+            return false;
+          }
+          final due = date(task);
+          return switch (plannerRange) {
+            '오늘' =>
+              due != null && !due.isBefore(today) && due.isBefore(tomorrow),
+            '지난 일정' => due != null && due.isBefore(today) && !task.flag('done'),
+            '7일 이내' =>
+              due != null && !due.isBefore(today) && due.isBefore(weekEnd),
+            '완료' => task.flag('done'),
+            _ => true,
+          };
+        }).toList()..sort((a, b) {
+          if (a.flag('done') != b.flag('done')) return a.flag('done') ? 1 : -1;
+          final first = date(a), second = date(b);
+          if (first == null) {
+            return second == null ? a.title.compareTo(b.title) : 1;
+          }
+          return second == null ? -1 : first.compareTo(second);
+        });
     return ListView(
       padding: const EdgeInsets.all(24),
       children: [
         Align(
           alignment: Alignment.centerLeft,
           child: FilledButton.icon(
-            onPressed: busy ? null : addTask,
+            onPressed: busy ? null : () => editTask(),
             icon: const Icon(Icons.add),
             label: const Text('일정 추가'),
           ),
         ),
+        const SizedBox(height: 12),
+        Wrap(
+          spacing: 8,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            for (final label in ['전체', '오늘', '지난 일정', '7일 이내', '완료'])
+              ChoiceChip(
+                label: Text(label),
+                selected: plannerRange == label,
+                onSelected: (_) => setState(() => plannerRange = label),
+              ),
+            if (courses.isNotEmpty)
+              PopupMenuButton<String>(
+                tooltip: '과목으로 필터',
+                onSelected: (value) => setState(() => plannerCourse = value),
+                itemBuilder: (_) => [
+                  const PopupMenuItem(value: '', child: Text('모든 과목')),
+                  for (final course in courses)
+                    PopupMenuItem(value: course, child: Text(course)),
+                ],
+                child: Padding(
+                  padding: const EdgeInsets.all(8),
+                  child: Text(
+                    courses.contains(plannerCourse) ? plannerCourse : '모든 과목 ▾',
+                  ),
+                ),
+              ),
+          ],
+        ),
         const SizedBox(height: 20),
         if (tasks.isEmpty)
-          const Text('학습 목표나 시험 일정을 추가하세요. 완료 상태는 자동으로 저장됩니다.'),
+          Text(all.isEmpty ? '학습 목표나 시험 일정을 추가하세요.' : '이 조건에 맞는 일정이 없습니다.'),
         for (final task in tasks) taskTile(task),
       ],
     );
@@ -952,128 +1177,148 @@ class _FenruShellState extends State<FenruShell> {
     }, label: 'Canvas 연결을 확인하고 있습니다…');
   }
 
-  Future<void> syncCanvas({bool chooseCourses = false}) => run(() async {
-    final token = await SecureCredentials().read('canvas');
-    if (token == null) {
-      throw const UserFacingException('설정에서 Canvas를 먼저 연결하세요.');
-    }
-    final provider = CanvasProvider(w.preferences['canvasUrl'] ?? '', token);
-    final courses = await provider.courses();
-    if (!mounted) return;
-    final selection = CanvasSyncSelection(w, provider.base);
-    final remembered = selection.read();
-    final courseSelection = <int>{
-      for (var i = 0; i < courses.length; i++)
-        if (remembered.contains('${courses[i]['id']}')) i,
-    };
-    final List<Json>? chosen;
-    if (!chooseCourses && remembered.isNotEmpty) {
-      chosen = courses.where((c) => remembered.contains('${c['id']}')).toList();
-      if (chosen.isEmpty) {
-        throw const UserFacingException(
-          '저장한 과목이 현재 수강 목록에 없습니다. 동기화 과목 변경에서 다시 선택하세요.',
-        );
+  Future<void> syncCanvas({bool chooseCourses = false}) => run(
+    () async {
+      final token = await SecureCredentials().read('canvas');
+      if (token == null) {
+        throw const UserFacingException('설정에서 Canvas를 먼저 연결하세요.');
       }
-    } else {
-      chosen = await showDialog<List<Json>>(
-        context: context,
-        builder: (context) => StatefulBuilder(
-          builder: (context, update) => AlertDialog(
-            title: const Text('가져올 과목 선택'),
-            content: SizedBox(
-              width: 500,
-              height: 350,
-              child: courses.isEmpty
-                  ? const Text('수강 중인 과목이 없습니다.')
-                  : ListView.builder(
-                      itemCount: courses.length,
-                      itemBuilder: (_, i) => CheckboxListTile(
-                        value: courseSelection.contains(i),
-                        title: Text(
-                          '${courses[i]['name'] ?? courses[i]['id']}',
+      final provider = CanvasProvider(w.preferences['canvasUrl'] ?? '', token);
+      final courses = await provider.courses();
+      if (!mounted) return;
+      final selection = CanvasSyncSelection(w, provider.base);
+      final remembered = selection.read();
+      final courseSelection = <int>{
+        for (var i = 0; i < courses.length; i++)
+          if (remembered.contains('${courses[i]['id']}')) i,
+      };
+      final List<Json>? chosen;
+      if (!chooseCourses && remembered.isNotEmpty) {
+        chosen = courses
+            .where((c) => remembered.contains('${c['id']}'))
+            .toList();
+        if (chosen.isEmpty) {
+          throw const UserFacingException(
+            '저장한 과목이 현재 수강 목록에 없습니다. 동기화 과목 변경에서 다시 선택하세요.',
+          );
+        }
+      } else {
+        chosen = await showDialog<List<Json>>(
+          context: context,
+          builder: (context) => StatefulBuilder(
+            builder: (context, update) => AlertDialog(
+              title: const Text('가져올 과목 선택'),
+              content: SizedBox(
+                width: 500,
+                height: 350,
+                child: courses.isEmpty
+                    ? const Text('수강 중인 과목이 없습니다.')
+                    : ListView.builder(
+                        itemCount: courses.length,
+                        itemBuilder: (_, i) => CheckboxListTile(
+                          value: courseSelection.contains(i),
+                          title: Text(
+                            '${courses[i]['name'] ?? courses[i]['id']}',
+                          ),
+                          onChanged: (value) => update(() {
+                            value == true
+                                ? courseSelection.add(i)
+                                : courseSelection.remove(i);
+                          }),
                         ),
-                        onChanged: (value) => update(() {
-                          value == true
-                              ? courseSelection.add(i)
-                              : courseSelection.remove(i);
-                        }),
                       ),
-                    ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('취소'),
+                ),
+                FilledButton(
+                  onPressed: courseSelection.isEmpty
+                      ? null
+                      : () => Navigator.pop(
+                          context,
+                          courseSelection.map((i) => courses[i]).toList(),
+                        ),
+                  child: const Text('가져오기'),
+                ),
+              ],
             ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('취소'),
-              ),
-              FilledButton(
-                onPressed: courseSelection.isEmpty
-                    ? null
-                    : () => Navigator.pop(
-                        context,
-                        courseSelection.map((i) => courses[i]).toList(),
-                      ),
-                child: const Text('가져오기'),
-              ),
-            ],
           ),
-        ),
-      );
-    }
-    if (chosen == null) return;
-    await selection.save(chosen);
-    if (mounted) {
-      setState(() {
-        canvasActivity.clear();
-        canvasPanelOpen = true;
-        canvasImportRunning = true;
-        status = '';
-      });
-    }
-    final summaries = <String>[];
-    try {
-      for (final (index, course) in chosen.indexed) {
-        final title = '${course['name'] ?? course['id']}';
-        addCanvasActivity(
-          '과목 ${index + 1}/${chosen.length} · $title',
-          Icons.school_outlined,
         );
-        final report = await provider.importCourse(w, course, (message) {
-          final icon = message.startsWith('발견 ·')
-              ? Icons.description_outlined
-              : message.startsWith('저장 ')
-              ? Icons.download_outlined
-              : Icons.search;
-          addCanvasActivity(message, icon);
-        });
-        summaries.add('$title\n${report.summary}');
-        addCanvasActivity(
-          '$title · ${report.summary}',
-          Icons.check_circle_outline,
-        );
-        summaries.addAll(report.warnings);
-        for (final warning in report.warnings) {
-          addCanvasActivity(warning, Icons.warning_amber_outlined);
-        }
-        if (report.imported == 0 &&
-            report.unchanged == 0 &&
-            report.contentSaved == 0) {
-          const empty = '가져올 문서나 본문이 발견되지 않았습니다.';
-          summaries.add(empty);
-          addCanvasActivity(empty, Icons.info_outline);
-        }
       }
-      await w.setPreference('canvasLastSync', DateTime.now().toIso8601String());
-      await w.setPreference('canvasImportSummary', summaries.join('\n\n'));
-    } catch (e) {
-      addCanvasActivity(
-        e is UserFacingException ? e.message : 'Canvas 가져오기에 실패했습니다.',
-        Icons.error_outline,
-      );
-      rethrow;
-    } finally {
-      if (mounted) setState(() => canvasImportRunning = false);
-    }
-  }, label: 'Canvas 과목을 확인하고 있습니다…');
+      if (chosen == null) return;
+      await selection.save(chosen);
+      if (mounted) {
+        setState(() {
+          canvasActivity.clear();
+          canvasPanelOpen = true;
+          canvasImportRunning = true;
+          canvasStopRequested = false;
+          status = '';
+        });
+      }
+      final summaries = <String>[];
+      try {
+        for (final (index, course) in chosen.indexed) {
+          if (canvasStopRequested) throw const _CanvasImportStopped();
+          final title = '${course['name'] ?? course['id']}';
+          addCanvasActivity(
+            '과목 ${index + 1}/${chosen.length} · $title',
+            Icons.school_outlined,
+          );
+          final report = await provider.importCourse(w, course, (message) {
+            if (canvasStopRequested) throw const _CanvasImportStopped();
+            final icon = message.startsWith('발견 ·')
+                ? Icons.description_outlined
+                : message.startsWith('저장 ')
+                ? Icons.download_outlined
+                : Icons.search;
+            addCanvasActivity(message, icon);
+          });
+          summaries.add('$title\n${report.summary}');
+          addCanvasActivity(
+            '$title · ${report.summary}',
+            Icons.check_circle_outline,
+          );
+          summaries.addAll(report.warnings);
+          for (final warning in report.warnings) {
+            addCanvasActivity(warning, Icons.warning_amber_outlined);
+          }
+          if (report.imported == 0 &&
+              report.unchanged == 0 &&
+              report.contentSaved == 0) {
+            const empty = '가져올 문서나 본문이 발견되지 않았습니다.';
+            summaries.add(empty);
+            addCanvasActivity(empty, Icons.info_outline);
+          }
+        }
+        if (canvasStopRequested) throw const _CanvasImportStopped();
+        await w.setPreference(
+          'canvasLastSync',
+          DateTime.now().toIso8601String(),
+        );
+        await w.setPreference('canvasImportSummary', summaries.join('\n\n'));
+      } on _CanvasImportStopped {
+        const message = '가져오기를 중단했습니다. 저장된 자료는 유지됩니다.';
+        addCanvasActivity(message, Icons.stop_circle_outlined);
+        await w.setPreference(
+          'canvasImportSummary',
+          [...summaries, message].join('\n\n'),
+        );
+      } catch (e) {
+        addCanvasActivity(
+          e is UserFacingException ? e.message : 'Canvas 가져오기에 실패했습니다.',
+          Icons.error_outline,
+        );
+        rethrow;
+      } finally {
+        if (mounted) setState(() => canvasImportRunning = false);
+      }
+    },
+    label: 'Canvas 과목을 확인하고 있습니다…',
+    completion: '',
+  );
 
   void addCanvasActivity(String message, IconData icon) {
     if (mounted) {
@@ -1088,9 +1333,34 @@ class _FenruShellState extends State<FenruShell> {
       children: [
         ListTile(
           title: Text(canvasImportRunning ? 'Canvas 가져오는 중' : 'Canvas 가져오기 내역'),
-          trailing: TextButton(
-            onPressed: () => setState(() => canvasPanelOpen = false),
-            child: const Text('숨기기'),
+          trailing: Wrap(
+            spacing: 2,
+            children: [
+              if (canvasImportRunning)
+                IconButton(
+                  tooltip: '현재 작업 후 중단',
+                  onPressed: canvasStopRequested
+                      ? null
+                      : () {
+                          setState(() => canvasStopRequested = true);
+                          addCanvasActivity(
+                            '현재 작업이 끝나면 중단합니다.',
+                            Icons.stop_circle_outlined,
+                          );
+                        },
+                  icon: const Icon(Icons.stop_circle_outlined),
+                )
+              else
+                IconButton(
+                  tooltip: 'Canvas 가져오기 다시 실행',
+                  onPressed: busy ? null : syncCanvas,
+                  icon: const Icon(Icons.refresh),
+                ),
+              TextButton(
+                onPressed: () => setState(() => canvasPanelOpen = false),
+                child: const Text('숨기기'),
+              ),
+            ],
           ),
         ),
         if (canvasImportRunning) const LinearProgressIndicator(),

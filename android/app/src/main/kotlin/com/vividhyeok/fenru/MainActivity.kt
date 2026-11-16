@@ -3,12 +3,14 @@ package com.vividhyeok.fenru
 import android.accounts.Account
 import android.accounts.AccountManager
 import android.content.Intent
+import android.graphics.BitmapFactory
 import android.view.MotionEvent
 import com.google.android.gms.auth.api.identity.AuthorizationRequest
 import com.google.android.gms.auth.api.identity.AuthorizationResult
 import com.google.android.gms.auth.api.identity.Identity
 import com.google.android.gms.common.api.ApiException
 import com.google.android.gms.common.api.Scope
+import com.googlecode.tesseract.android.TessBaseAPI
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -23,6 +25,19 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "fenru/ocr")
+            .setMethodCallHandler { call, result ->
+                if (call.method == "recognize") {
+                    recognizePage(
+                        call.argument<String>("image"),
+                        call.argument<String>("models"),
+                        call.argument<String>("language"),
+                        result
+                    )
+                } else {
+                    result.notImplemented()
+                }
+            }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "fenru/drive")
             .setMethodCallHandler { call, result ->
                 when (call.method) {
@@ -36,6 +51,35 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+    }
+
+    private fun recognizePage(
+        image: String?, models: String?, language: String?, result: MethodChannel.Result
+    ) {
+        if (image == null || models == null || language !in listOf("eng", "kor+eng")) {
+            result.error("invalid_ocr_input", "글자 인식 설정을 확인하세요.", null)
+            return
+        }
+        Thread {
+            try {
+                val bitmap = checkNotNull(BitmapFactory.decodeFile(image))
+                try {
+                    val tess = TessBaseAPI()
+                    try {
+                        check(tess.init(models, language))
+                        tess.setImage(bitmap)
+                        val text = tess.getUTF8Text().orEmpty()
+                        runOnUiThread { result.success(text) }
+                    } finally {
+                        tess.recycle()
+                    }
+                } finally {
+                    bitmap.recycle()
+                }
+            } catch (_: Exception) {
+                runOnUiThread { result.error("ocr_failed", "이 페이지의 글자를 인식하지 못했습니다.", null) }
+            }
+        }.start()
     }
 
     private fun startDriveAuthorization(

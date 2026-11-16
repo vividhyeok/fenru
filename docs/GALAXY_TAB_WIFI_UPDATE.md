@@ -20,7 +20,7 @@ $adb = 'C:\Users\user\AppData\Local\Android\sdk\platform-tools\adb.exe'
 
 `install -r`은 기존 앱의 데이터를 유지하면서 교체합니다. 기존 앱을 삭제하거나 앱 데이터 지우기를 실행하지 않습니다. 설치에 실패해도 삭제 후 재설치로 우회하지 말고 오류를 확인합니다.
 
-이번 업데이트는 앱 ID `com.vividhyeok.fenru`, 버전 `0.1.0-alpha.10`/versionCode `9`, 기존 프로젝트 배포 인증서를 사용합니다. alpha.7 공개 서명과 비교하여 인증서 SHA-256 `b2f9b21cb92f4c424d942a722986ec5b9c76c981154a7355b713b155025c629a`를 확인합니다. 로컬 자료·설정·API 키 저장 방식은 바꾸지 않습니다. 기기에 설치된 앱도 같은 프로젝트 배포 서명일 때 업데이트가 가능합니다.
+업데이트 APK는 앱 ID `com.vividhyeok.fenru`, `pubspec.yaml`에 지정한 버전, 기존 프로젝트 배포 인증서를 사용합니다. 인증서 SHA-256은 `b2f9b21cb92f4c424d942a722986ec5b9c76c981154a7355b713b155025c629a`입니다. 설치된 앱의 서명이 일치하고 새 versionCode가 더 높으면 업데이트할 수 있습니다. 업데이트 전후에 `adb shell dumpsys package com.vividhyeok.fenru`로 버전·앱 UID·최초 설치 시간을 비교할 수 있습니다.
 
 다음 업데이트 빌드는 프로젝트 루트에서 `./tools/build_android_release.ps1`을 실행합니다. 기존 프로젝트 키를 재사용하며 인증서가 다르면 업데이트 파일 내보내기를 중단합니다. 비밀번호는 Windows DPAPI에서 메모리로만 풀고 빌드 종료 시 프로세스 환경변수를 원래대로 복구합니다.
 

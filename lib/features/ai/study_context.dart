@@ -4,6 +4,9 @@ import 'dart:math' as math;
 
 import 'package:pdfrx/pdfrx.dart';
 
+import '../reader/pdf_ocr.dart';
+import '../reader/reading_tools.dart';
+
 import '../../core/models.dart';
 import '../../core/workspace.dart';
 
@@ -114,16 +117,18 @@ class StudyContextService {
     if (cache != null &&
         await cache.exists() &&
         await cache.length() < 24 * 1024 * 1024) {
+      List<String>? cached;
       try {
         final data = jsonDecode(await cache.readAsString()) as Map;
         if (data['version'] == 1 &&
             data['hash'] == hash &&
             data['pages'] is List) {
-          return (data['pages'] as List).cast<String>();
+          cached = List<String>.from(data['pages'] as List);
         }
       } catch (_) {
         /* A derived cache can be regenerated from the original. */
       }
+      if (cached != null) return _withRecognizedPages(document, cached);
     }
     await pdfrxFlutterInitialize();
     final pdf = await PdfDocument.openFile(file.path);
@@ -167,6 +172,21 @@ class StudyContextService {
         /* Cache failure does not prevent reading the document. */
       }
     }
+    return _withRecognizedPages(document, result);
+  }
+
+  Future<List<String>> _withRecognizedPages(
+    WorkspaceObject document,
+    List<String> text,
+  ) async {
+    final result = List<String>.of(text);
+    for (final (index, page) in text.indexed) {
+      checkCancellation();
+      if (page.trim().isEmpty) {
+        result[index] =
+            await readRecognizedPage(workspace, document, index + 1) ?? page;
+      }
+    }
     return result;
   }
 
@@ -184,21 +204,7 @@ class StudyContextService {
       }
       selectedPages.add(page);
     } else if (mode == 'range') {
-      for (final part in range.split(',')) {
-        final match = RegExp(r'^\s*(\d+)\s*(?:-\s*(\d+))?\s*$')
-            .firstMatch(part);
-        if (match == null) {
-          throw const UserFacingException('페이지 범위를 1-5, 8 형태로 입력하세요.');
-        }
-        final start = int.parse(match[1]!);
-        final end = int.parse(match[2] ?? match[1]!);
-        if (start < 1 || end < start || end > pages.length) {
-          throw const UserFacingException('문서 안의 올바른 페이지 범위를 입력하세요.');
-        }
-        for (var i = start; i <= end; i++) {
-          selectedPages.add(i);
-        }
-      }
+      selectedPages.addAll(parsePageSelection(range, pages.length));
     } else {
       selectedPages.addAll(List.generate(pages.length, (i) => i + 1));
     }

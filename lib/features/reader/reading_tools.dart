@@ -3,6 +3,25 @@ import 'dart:convert';
 import '../../core/workspace.dart';
 import '../../core/models.dart';
 
+List<int> parsePageSelection(String range, int pageCount) {
+  final pages = <int>{};
+  for (final part in range.split(',')) {
+    final match = RegExp(r'^\s*(\d+)\s*(?:-\s*(\d+))?\s*$').firstMatch(part);
+    if (match == null) {
+      throw const UserFacingException('페이지 범위를 1-5, 8 형태로 입력하세요.');
+    }
+    final start = int.tryParse(match[1]!) ?? 0;
+    final end = int.tryParse(match[2] ?? match[1]!) ?? 0;
+    if (start < 1 || end < start || end > pageCount) {
+      throw const UserFacingException('문서 안의 올바른 페이지 범위를 입력하세요.');
+    }
+    for (var page = start; page <= end; page++) {
+      pages.add(page);
+    }
+  }
+  return pages.toList();
+}
+
 class ReaderViewSettings {
   const ReaderViewSettings({
     this.fit = 'custom',

@@ -321,6 +321,7 @@ class CanvasProvider implements LmsProvider {
       };
     }
     final files = await discoverFiles(courseId, report, progress);
+    progress('발견한 공지와 강의 본문을 저장합니다…');
     await saveCourseContents(workspace, local, report);
     progress('문서 후보 ${files.length}개 · 저장 시작');
     for (final (index, file) in files.indexed) {
@@ -405,6 +406,7 @@ class CanvasProvider implements LmsProvider {
         await tempDir.delete(recursive: true);
       }
     }
+    progress('과목의 과제 일정을 가져옵니다…');
     List<Json> assignments = [];
     try {
       assignments = await collection(

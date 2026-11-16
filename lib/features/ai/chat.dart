@@ -10,6 +10,7 @@ import '../../core/workspace.dart';
 import '../../integrations/ai.dart';
 import '../../integrations/credentials.dart';
 import '../../ui/note_editor.dart';
+import '../../ui/dialogs.dart';
 import 'settings.dart';
 import 'review.dart';
 import 'study_context.dart';
@@ -710,51 +711,147 @@ class _AIChatState extends State<AIChat> {
   }
 
   Future<void> showHistory() async {
-    final chats =
-        w
-            .ofKind('chat')
-            .where(
-              (c) =>
-                  c.text('documentId') == (widget.documentId ?? '') &&
-                  c.text('courseId') == (widget.courseId ?? ''),
-            )
-            .toList()
-          ..sort((a, b) => b.updated.compareTo(a.updated));
+    var query = '';
     final selected = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('이 범위의 대화 기록'),
-        content: SizedBox(
-          width: 560,
-          height: 360,
-          child: chats.isEmpty
-              ? const Center(child: Text('아직 저장된 대화가 없습니다.'))
-              : ListView.builder(
-                  itemCount: chats.length,
-                  itemBuilder: (_, index) {
-                    final chat = chats[index];
-                    return ListTile(
-                      selected: chat.id == session,
-                      leading: const Icon(Icons.chat_bubble_outline),
-                      title: Text(
-                        chat.title,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
+      builder: (dialog) => StatefulBuilder(
+        builder: (_, update) => ListenableBuilder(
+          listenable: w,
+          builder: (_, _) {
+            final matches = query.isEmpty
+                ? const <String>{}
+                : {
+                    for (final message in w.ofKind('message'))
+                      if (message.text('body').toLowerCase().contains(query))
+                        message.text('sessionId'),
+                  };
+            final chats =
+                w
+                    .ofKind('chat')
+                    .where(
+                      (chat) =>
+                          chat.text('documentId') ==
+                              (widget.documentId ?? '') &&
+                          chat.text('courseId') == (widget.courseId ?? '') &&
+                          (query.isEmpty ||
+                              chat.title.toLowerCase().contains(query) ||
+                              matches.contains(chat.id)),
+                    )
+                    .toList()
+                  ..sort((a, b) {
+                    if (a.flag('pinned') != b.flag('pinned')) {
+                      return a.flag('pinned') ? -1 : 1;
+                    }
+                    return b.updated.compareTo(a.updated);
+                  });
+            return AlertDialog(
+              title: const Text('이 범위의 대화 기록'),
+              content: SizedBox(
+                width: 560,
+                height: 360,
+                child: Column(
+                  children: [
+                    TextField(
+                      decoration: const InputDecoration(
+                        prefixIcon: Icon(Icons.search),
+                        hintText: '제목 또는 대화 내용 검색',
                       ),
-                      subtitle: Text(
-                        chat.updated.toLocal().toString().substring(0, 16),
-                      ),
-                      onTap: () => Navigator.pop(context, chat.id),
-                    );
-                  },
+                      onChanged: (value) =>
+                          update(() => query = value.trim().toLowerCase()),
+                    ),
+                    Expanded(
+                      child: chats.isEmpty
+                          ? Center(
+                              child: Text(
+                                query.isEmpty
+                                    ? '아직 저장된 대화가 없습니다.'
+                                    : '일치하는 대화가 없습니다.',
+                              ),
+                            )
+                          : ListView.builder(
+                              itemCount: chats.length,
+                              itemBuilder: (_, index) {
+                                final chat = chats[index];
+                                final pinned = chat.flag('pinned');
+                                return ListTile(
+                                  selected: chat.id == session,
+                                  leading: Icon(
+                                    pinned
+                                        ? Icons.push_pin
+                                        : Icons.chat_bubble_outline,
+                                  ),
+                                  title: Text(
+                                    chat.title,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  subtitle: Text(
+                                    chat.updated.toLocal().toString().substring(
+                                      0,
+                                      16,
+                                    ),
+                                  ),
+                                  onTap: () => Navigator.pop(dialog, chat.id),
+                                  trailing: PopupMenuButton<String>(
+                                    tooltip: '대화 관리',
+                                    onSelected: (action) async {
+                                      final title = action == 'rename'
+                                          ? (await askText(
+                                              dialog,
+                                              '대화 이름 변경',
+                                              initial: chat.title,
+                                            ))?.trim()
+                                          : null;
+                                      if (!dialog.mounted ||
+                                          (action == 'rename' &&
+                                              (title == null ||
+                                                  title.isEmpty))) {
+                                        return;
+                                      }
+                                      final current = w.byId(chat.id);
+                                      if (current == null || current.deleted) {
+                                        return;
+                                      }
+                                      try {
+                                        await w.save('chat', {
+                                          ...current.data,
+                                          'title': ?title,
+                                          if (action == 'pin')
+                                            'pinned': !current.flag('pinned'),
+                                        }, id: current.id);
+                                      } catch (_) {
+                                        if (mounted) {
+                                          feedback('대화 설정을 저장하지 못했습니다.');
+                                        }
+                                      }
+                                    },
+                                    itemBuilder: (_) => [
+                                      PopupMenuItem(
+                                        value: 'pin',
+                                        child: Text(pinned ? '고정 해제' : '상단 고정'),
+                                      ),
+                                      const PopupMenuItem(
+                                        value: 'rename',
+                                        child: Text('이름 변경'),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                              },
+                            ),
+                    ),
+                  ],
                 ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialog),
+                  child: const Text('닫기'),
+                ),
+              ],
+            );
+          },
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('닫기'),
-          ),
-        ],
       ),
     );
     if (selected != null && mounted) switchSession(selected);

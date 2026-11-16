@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pdfrx/pdfrx.dart';
 import 'package:fenru/integrations/canvas.dart';
 import 'package:fenru/core/database.dart';
 import 'package:fenru/core/workspace.dart';
@@ -11,6 +12,7 @@ import 'package:fenru/features/ai/study_context.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  Pdfrx.cacheDirectoryPath ??= Directory.systemTemp.path;
   test('remembered sync courses migrate existing courses and stay isolated by school', () async {
     final root = await Directory.systemTemp.createTemp('fenru-sync-selection-');
     final w = Workspace(root, WorkspaceDatabase.memory());

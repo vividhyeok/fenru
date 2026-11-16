@@ -8,7 +8,8 @@
 | Riverpod | 의존성 주입 | MIT | Dart/Flutter, 채택 |
 | go_router | 최초 진입 라우팅 | BSD-3-Clause | Flutter, 채택 |
 | Drift/sqlite3 | 영구 저장/FTS | MIT | Windows/Android, 채택 |
-| pdfrx/PDFium | PDF 렌더와 선택 | MIT / PDFium BSD 및 제3자 고지 | Windows/Android, 채택 |
+| pdfrx/PDFium | PDF 렌더·선택·벡터 필기 내보내기·페이지 편집 | MIT / PDFium BSD 및 제3자 고지 | Windows/Android, 채택 |
+| [Tesseract4Android](https://github.com/adaptech-cz/Tesseract4Android) / [tessdata_fast](https://github.com/tesseract-ocr/tessdata_fast) | 로컬 OCR과 한국어·영어 모델 | Apache-2.0 및 네이티브 의존성 고지 | Android는 JitPack 4.9.0과 SHA-256 검증 모델, Windows는 설치한 Tesseract CLI |
 | file_picker/path_provider | 시스템 파일 선택/지원 경로 | MIT / BSD-3-Clause | Windows/Android, 채택 |
 | flutter_markdown_plus | Markdown 미리보기 | BSD-3-Clause | Flutter, 채택 |
 | flutter_secure_storage | OS 비밀 저장소 | BSD-3-Clause | Windows/Android, 채택 |

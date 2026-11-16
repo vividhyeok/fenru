@@ -5,6 +5,7 @@ Future<String?> askText(
   String title, {
   String initial = '',
   bool multiline = false,
+  bool obscureText = false,
 }) async {
   final controller = TextEditingController(text: initial);
   final result = await showDialog<String>(
@@ -16,6 +17,9 @@ Future<String?> askText(
         child: TextField(
           controller: controller,
           autofocus: true,
+          obscureText: obscureText,
+          autocorrect: !obscureText,
+          enableSuggestions: !obscureText,
           minLines: multiline ? 4 : 1,
           maxLines: multiline ? 12 : 1,
           onSubmitted: multiline

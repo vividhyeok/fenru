@@ -6,12 +6,67 @@ import 'package:fenru/core/database.dart';
 import 'package:fenru/core/models.dart';
 import 'package:fenru/core/workspace.dart';
 import 'package:fenru/features/reader/ink.dart';
+import 'package:fenru/features/reader/pdf_export.dart';
+import 'package:pdfrx/pdfrx.dart';
 import 'package:fenru/features/ai/study_context.dart';
 import 'package:fenru/integrations/pdf_conversion.dart';
 
 import 'pdf_fixture.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  Pdfrx.cacheDirectoryPath ??= Directory.systemTemp.path;
+
+  test(
+    'PDF copy keeps selectable text and rotates the extracted page',
+    () async {
+      final root = await Directory.systemTemp.createTemp('fenru-pdf-export-');
+      try {
+        final original = await File('${root.path}/original.pdf')
+            .writeAsBytes(samplePdf());
+        final output = File('${root.path}/export.pdf');
+        await exportAnnotatedPdf(
+          source: original,
+          destination: output,
+          selectedPages: [1],
+          rotatePage: 1,
+          marks: [
+            WorkspaceObject(
+              id: 'ink',
+              kind: 'annotation',
+              revision: 1,
+              device: 'test',
+              updated: DateTime.utc(2026),
+              data: {
+                'page': 1,
+                'type': 'ink',
+                'tool': 'pen',
+                'width': 3,
+                'points': [
+                  [.2, .3],
+                  [.6, .45],
+                ],
+              },
+            ),
+          ],
+        );
+        final document = await PdfDocument.openFile(output.path);
+        try {
+          expect(document.pages.single.rotation.index, 1);
+          expect(
+            (await document.pages.single.loadText())!.fullText,
+            contains('Fenru learning workspace'),
+          );
+        } finally {
+          await document.dispose();
+        }
+        expect(await original.readAsBytes(), samplePdf());
+      } finally {
+        await root.delete(recursive: true);
+      }
+    },
+  );
+
   test('conversion preserves original, links PDF and reuses it', () async {
     final root = await Directory.systemTemp.createTemp('fenru-conversion-');
     final w = Workspace(root, WorkspaceDatabase.memory());

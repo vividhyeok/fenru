@@ -57,6 +57,7 @@ kotlin {
 
 dependencies {
     implementation("com.google.android.gms:play-services-auth:22.0.0")
+    implementation("cz.adaptech.tesseract4android:tesseract4android:4.9.0")
 }
 
 flutter {

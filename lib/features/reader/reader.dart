@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:open_filex/open_filex.dart';
+import 'package:path/path.dart' as p;
 import 'package:pdfrx/pdfrx.dart';
 
 import '../../core/models.dart';
@@ -13,8 +14,11 @@ import '../../core/workspace.dart';
 import '../../ui/dialogs.dart';
 import '../ai/chat.dart';
 import '../ai/study_context.dart';
+import '../notes/note_pdf.dart';
 import '../../ui/note_editor.dart';
 import 'ink.dart';
+import 'pdf_export.dart';
+import 'pdf_ocr.dart';
 import 'reading_tools.dart';
 import 'reader_toolbar.dart';
 import 'reader_settings.dart';
@@ -588,6 +592,46 @@ class _DocumentReaderState extends State<DocumentReader> {
           noteMode = true;
         });
       }
+    });
+  }
+
+  Future<void> saveSelectionAsNote(PdfTextSelectionDelegate selection) async {
+    await safely(() async {
+      if (!selection.isCopyAllowed || !selection.hasSelectedText) return;
+      final source = document;
+      final ranges = await selection.getSelectedTextRanges();
+      final excerpts = <String>[];
+      for (final range in ranges) {
+        final text = range.text.trim();
+        if (text.isEmpty) continue;
+        final url = Uri(
+          scheme: 'fenru-pdf',
+          host: 'document',
+          pathSegments: [source.id],
+          queryParameters: {'page': '${range.pageNumber}'},
+        );
+        final quoted = text
+            .split(RegExp(r'\r?\n'))
+            .map((line) => '> $line')
+            .join('\n');
+        excerpts.add('$quoted\n\n[PDF 원문 · ${range.pageNumber}쪽]($url)');
+      }
+      if (excerpts.isEmpty) return;
+      final note = await widget.workspace.save('note', {
+        'title': '${source.title} · PDF 발췌',
+        'body': excerpts.join('\n\n'),
+        'documentId': source.id,
+        'courseId': source.text('courseId'),
+      });
+      if (!mounted) return;
+      await selection.clearTextSelection();
+      if (!mounted) return;
+      await Navigator.push(
+        context,
+        MaterialPageRoute<void>(
+          builder: (_) => NoteEditor(workspace: widget.workspace, note: note),
+        ),
+      );
     });
   }
 
@@ -1220,6 +1264,27 @@ class _DocumentReaderState extends State<DocumentReader> {
                     label: const Text('PDF 본문 검색'),
                   ),
                   TextButton.icon(
+                    onPressed: controller.isReady && !exportingPdf
+                        ? () {
+                            Navigator.pop(sheetContext);
+                            pdfCopyOptions();
+                          }
+                        : null,
+                    icon: const Icon(Icons.picture_as_pdf_outlined),
+                    label: const Text('PDF 사본 저장'),
+                  ),
+                  if (Platform.isWindows || Platform.isAndroid)
+                    TextButton.icon(
+                      onPressed: controller.isReady && !ocrRunning
+                          ? () {
+                              Navigator.pop(sheetContext);
+                              recognizeCurrentPage();
+                            }
+                          : null,
+                      icon: const Icon(Icons.document_scanner_outlined),
+                      label: Text(ocrRunning ? '글자 인식 중…' : '현재 페이지 글자 인식'),
+                    ),
+                  TextButton.icon(
                     onPressed: () {
                       Navigator.pop(sheetContext);
                       addMark('bookmark');
@@ -1259,6 +1324,173 @@ class _DocumentReaderState extends State<DocumentReader> {
       ),
     ),
   );
+
+  bool exportingPdf = false;
+  bool ocrRunning = false;
+
+  Future<void> recognizeCurrentPage() async {
+    if (ocrRunning || !controller.isReady) return;
+    final current = page;
+    final doc = document;
+    final language = await showDialog<String>(
+      context: context,
+      builder: (dialog) => SimpleDialog(
+        title: Text('$current페이지 글자 인식'),
+        children: [
+          if (Platform.isAndroid)
+            const Padding(
+              padding: EdgeInsets.fromLTRB(24, 0, 24, 8),
+              child: Text('처음에는 언어 모델을 내려받습니다.'),
+            ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(dialog, 'kor+eng'),
+            child: const Text('한국어 + 영어'),
+          ),
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(dialog, 'eng'),
+            child: const Text('영어'),
+          ),
+        ],
+      ),
+    );
+    if (language == null || !mounted || !controller.isReady) return;
+    setState(() => ocrRunning = true);
+    try {
+      final recognized = await recognizePdfPage(
+        widget.workspace,
+        doc,
+        controller.document.pages[current - 1],
+        language: language,
+      );
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (dialog) => AlertDialog(
+          title: Text('$current페이지 인식 결과'),
+          content: SizedBox(
+            width: 520,
+            child: SingleChildScrollView(
+              child: SelectableText(
+                recognized.isEmpty ? '인식한 글자가 없습니다.' : recognized,
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialog),
+              child: const Text('닫기'),
+            ),
+          ],
+        ),
+      );
+    } catch (failure) {
+      if (mounted) {
+        setState(
+          () => error = failure is UserFacingException
+              ? failure.message
+              : '이 페이지의 글자를 인식하지 못했습니다.',
+        );
+      }
+    } finally {
+      if (mounted) setState(() => ocrRunning = false);
+    }
+  }
+
+  Future<void> pdfCopyOptions() async {
+    final selectedPage = page;
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheet) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final (value, title, icon) in [
+              ('all', '전체 PDF · 필기 포함', Icons.picture_as_pdf_outlined),
+              ('page', '현재 페이지만 · 필기 포함', Icons.description_outlined),
+              ('range', '페이지 범위 · 순서 지정', Icons.reorder),
+              ('rotate', '현재 페이지 90° 회전 · 전체 사본', Icons.rotate_right),
+            ])
+              ListTile(
+                leading: Icon(icon),
+                title: Text(title),
+                onTap: () => Navigator.pop(sheet, value),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (choice == null || !mounted || exportingPdf) return;
+    final range = choice == 'range'
+        ? await askText(
+            context,
+            '페이지 번호를 저장할 순서대로 입력',
+            initial: '1-$selectedPage',
+          )
+        : null;
+    if (!mounted ||
+        !controller.isReady ||
+        (choice == 'range' && range == null)) {
+      return;
+    }
+    final snapshot = document;
+    final marks = widget.workspace
+        .ofKind('annotation')
+        .where(
+          (mark) =>
+              mark.text('documentId') == snapshot.id &&
+              (mark.text('versionHash').isEmpty ||
+                  mark.text('versionHash') == snapshot.text('hash')) &&
+              {'ink', 'highlight', 'underline'}.contains(mark.text('type')),
+        )
+        .toList()
+        .reversed
+        .toList();
+    setState(() => exportingPdf = true);
+    Directory? temporary;
+    try {
+      final selectedPages = choice == 'page'
+          ? [selectedPage]
+          : range == null
+          ? null
+          : parsePageSelection(range, controller.pageCount);
+      temporary = await Directory.systemTemp.createTemp('fenru-pdf-copy-');
+      final target = File(p.join(temporary.path, 'copy.pdf'));
+      await exportAnnotatedPdf(
+        source: widget.workspace.fileFor(snapshot),
+        destination: target,
+        marks: marks,
+        selectedPages: selectedPages,
+        rotatePage: choice == 'rotate' ? selectedPage : null,
+      );
+      if (!mounted) return;
+      final bytes = await target.readAsBytes();
+      if (!mounted) return;
+      final name =
+          '${p.basenameWithoutExtension(snapshot.title)}'
+          '${choice == 'page' ? ' - $selectedPage페이지' : ' - 필기 사본'}';
+      final result = await saveNotePdfFile(
+        name,
+        bytes,
+        dialogTitle: 'PDF 사본 저장',
+      );
+      if (mounted && result != null) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('PDF 사본을 저장했습니다.')));
+      }
+    } catch (failure) {
+      if (mounted) {
+        setState(
+          () => error = failure is UserFacingException
+              ? failure.message
+              : 'PDF 사본을 저장하지 못했습니다.',
+        );
+      }
+    } finally {
+      if (mounted) setState(() => exportingPdf = false);
+      if (temporary != null) await temporary.delete(recursive: true);
+    }
+  }
 
   Widget writingToolbar() => ReaderToolbar(
     tool: inkTool,
@@ -1406,6 +1638,8 @@ class _DocumentReaderState extends State<DocumentReader> {
 
   Widget pdfViewer(File file, WorkspaceObject doc) => PdfViewer.file(
     file.path,
+    passwordProvider: () =>
+        mounted ? askText(context, 'PDF 암호', obscureText: true) : null,
     controller: controller,
     initialPageNumber: page,
     params: PdfViewerParams(
@@ -1576,6 +1810,13 @@ class _DocumentReaderState extends State<DocumentReader> {
           return;
         }
         items.addAll([
+          ContextMenuButtonItem(
+            label: '노트에 발췌',
+            onPressed: () {
+              params.dismissContextMenu();
+              saveSelectionAsNote(selection);
+            },
+          ),
           ContextMenuButtonItem(
             label: '핵심 설명',
             onPressed: () async {

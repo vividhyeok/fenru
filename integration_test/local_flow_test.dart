@@ -284,7 +284,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 700));
     await tester.pumpAndSettle();
     expect(w.ofKind('note').single.text('body'), contains('My study summary'));
-    await tester.tap(find.byTooltip('노트 PDF'));
+    await tester.tap(find.byTooltip('노트 메뉴'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('PDF로 만들어 필기하기'));
     for (var i = 0; i < 100 && w.ofKind('document').length < 2; i++) {
