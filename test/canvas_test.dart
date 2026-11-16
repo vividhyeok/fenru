@@ -128,7 +128,7 @@ void main() {
         if (path == '/api/v1/courses/1/pages/week-1') {
           return json({
             'title': 'Week 1',
-            'body': '<a data-api-endpoint="https://school.edu/api/v1/files/11" href="#">B.docx</a>',
+            'body': '<a data-api-endpoint="https://school.edu/api/v1/pages/week-1" href="/files/11/download">B.docx</a>',
           });
         }
         if (path == '/api/v1/courses/1/discussion_topics') {
@@ -140,7 +140,7 @@ void main() {
                 'message': '<p>기말 시험 범위는 세포 호흡입니다.</p>',
                 'posted_at': '2026-11-04T01:00:00Z',
                 'attachments': [
-                  {'url': '/courses/1/files/13/download', 'filename': 'D.pptx'},
+                  {'id': 13, 'filename': 'D.pptx'},
                 ],
               },
             ]);
@@ -181,11 +181,12 @@ void main() {
         throw StateError('Unexpected request: $path');
       });
     final report = CanvasImportReport();
+    final progress = <String>[];
     final files = await CanvasProvider(
       'https://school.edu',
       'fake',
       client: dio,
-    ).discoverFiles('1', report, (_) {});
+    ).discoverFiles('1', report, progress.add);
     expect(files.map((f) => '${f['id']}').toSet(), {
       '10',
       '11',
@@ -197,10 +198,27 @@ void main() {
       files.firstWhere((f) => f['id'] == 10)['_locations'],
       contains('게시판 · Board'),
     );
+    expect(
+      files.firstWhere((f) => f['id'] == 11)['_locations'],
+      contains('모듈 · 2'),
+    );
     expect(requested.every((host) => host == 'school.edu'), isTrue);
     expect(report.warnings, isEmpty);
     expect(report.contents['topic:4']!['body'], contains('세포 호흡'));
     expect(report.contents['topic:4']!['contentType'], '공지');
+    expect(
+      progress,
+      containsAllInOrder([
+        '탐색 · 모듈 · 2',
+        '탐색 · 페이지',
+        '발견 · 페이지 · Intro · file_10.pdf',
+        '탐색 · 게시판',
+        '발견 · 게시판 · Board · file_10.pdf',
+        '발견 · 게시판 · Board · file_12.pdf',
+        '탐색 · 공지',
+        '탐색 · 과제 첨부자료',
+      ]),
+    );
   });
   test('module download rejects a successful HTTP login page', () async {
     final root = await Directory.systemTemp.createTemp('fenru-login-test-');

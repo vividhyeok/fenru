@@ -20,6 +20,8 @@ void main() {
       final w = Workspace(root, WorkspaceDatabase.memory());
       await tester.runAsync(w.initialize);
       await tester.pumpWidget(MaterialApp(home: Onboarding(workspace: w)));
+      await tester.tap(find.text('연결 설정 보기'));
+      await tester.pumpAndSettle();
       final key = find.widgetWithText(TextField, '새 API 키');
       await tester.ensureVisible(key);
       await tester.enterText(key, 'fixture-key');
@@ -43,6 +45,9 @@ void main() {
     final w = Workspace(temp, WorkspaceDatabase.memory());
     await tester.runAsync(w.initialize);
     await tester.pumpWidget(MaterialApp(home: Onboarding(workspace: w)));
+    expect(find.text('두 손가락으로 이동·확대'), findsOneWidget);
+    await tester.tap(find.text('연결 설정 보기'));
+    await tester.pumpAndSettle();
     expect(find.text('학교 Canvas HTTPS 주소'), findsOneWidget);
     expect(find.text('새 API 키'), findsOneWidget);
     await tester.scrollUntilVisible(

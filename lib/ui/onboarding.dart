@@ -8,8 +8,13 @@ import '../integrations/credentials.dart';
 import 'theme.dart';
 
 class Onboarding extends StatefulWidget {
-  const Onboarding({super.key, required this.workspace});
+  const Onboarding({
+    super.key,
+    required this.workspace,
+    this.showSetup = false,
+  });
   final Workspace workspace;
+  final bool showSetup;
   @override
   State<Onboarding> createState() => _OnboardingState();
 }
@@ -18,6 +23,7 @@ class _OnboardingState extends State<Onboarding> {
   final aiKey = GlobalKey<AISettingsState>();
   final url = TextEditingController();
   final token = TextEditingController();
+  late bool setup = widget.showSetup;
   bool busy = false;
   String status = '';
   @override
@@ -46,8 +52,10 @@ class _OnboardingState extends State<Onboarding> {
       await provider.courses();
       await SecureCredentials().write('canvas', token.text.trim());
       await widget.workspace.setPreference('canvasUrl', provider.base.origin);
-      token.clear();
-      if (mounted) setState(() => status = '학교 연결 완료');
+      if (mounted) {
+        token.clear();
+        setState(() => status = '학교 연결 완료');
+      }
       return true;
     } catch (e) {
       if (mounted) {
@@ -83,17 +91,40 @@ class _OnboardingState extends State<Onboarding> {
     }
   }
 
+  bool get canvasConfigured =>
+      (widget.workspace.preferences['canvasUrl'] ?? '').isNotEmpty;
+
+  bool get aiConfigured {
+    final preferences = widget.workspace.preferences;
+    final provider = preferences['ai.provider'];
+    return provider != null &&
+        (preferences['ai.$provider.model'] ?? '').isNotEmpty;
+  }
+
   @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: Navigator.canPop(context)
-        ? AppBar(title: const Text('학교 · AI 빠른 연결'))
-        : null,
+    appBar: AppBar(title: Text(setup ? '연결 설정' : '조작 안내')),
     bottomNavigationBar: SafeArea(
       child: Padding(
         padding: const EdgeInsets.all(16),
-        child: FilledButton(
-          onPressed: busy ? null : start,
-          child: const Text('Fenru 시작하기'),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (status.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Text(status),
+              ),
+            FilledButton(
+              onPressed: busy
+                  ? null
+                  : setup
+                  ? start
+                  : () => setState(() => setup = true),
+              child: Text(setup ? 'Fenru 시작하기' : '연결 설정 보기'),
+            ),
+          ],
         ),
       ),
     ),
@@ -106,71 +137,95 @@ class _OnboardingState extends State<Onboarding> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Row(
+                Row(
                   children: [
-                    FenruMark(size: 48),
-                    SizedBox(width: 12),
+                    const FenruMark(size: 40),
+                    const SizedBox(width: 12),
                     Expanded(
                       child: Text(
-                        'Fenru 시작하기',
-                        style: TextStyle(
-                          fontSize: 28,
-                          fontWeight: FontWeight.bold,
-                        ),
+                        setup ? '학교와 AI 연결' : 'PDF 읽기와 필기',
+                        style: Theme.of(context).textTheme.headlineSmall,
                       ),
                     ),
                   ],
                 ),
                 const SizedBox(height: 16),
-                const Text(
-                  '학교와 AI를 여기서 바로 연결하세요. 입력 후 시작하기를 누르면 함께 저장합니다. 연결 없이 PDF를 읽고 필기할 수도 있습니다.',
-                ),
-                const SizedBox(height: 20),
-                Text(
-                  '학교 Canvas 연결 · 선택',
-                  style: Theme.of(context).textTheme.titleLarge,
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: url,
-                  keyboardType: TextInputType.url,
-                  decoration: const InputDecoration(
-                    labelText: '학교 Canvas HTTPS 주소',
+                if (!setup) ...[
+                  const ListTile(
+                    leading: Icon(Icons.edit_outlined),
+                    title: Text('S펜으로 필기'),
+                    subtitle: Text('버튼을 누르는 동안 지우기'),
                   ),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: token,
-                  obscureText: true,
-                  autocorrect: false,
-                  enableSuggestions: false,
-                  decoration: const InputDecoration(
-                    labelText: 'Canvas 개인 액세스 토큰',
+                  const ListTile(
+                    leading: Icon(Icons.pinch_outlined),
+                    title: Text('두 손가락으로 이동·확대'),
                   ),
-                ),
-                const Text('Canvas → 계정 → 설정에서 발급한 토큰을 입력하세요.'),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: FilledButton(
-                    onPressed: busy ? null : connect,
-                    child: const Text('학교 연결 확인 및 저장'),
+                  const ListTile(
+                    leading: Icon(Icons.pan_tool_outlined),
+                    title: Text('왼쪽 펜 아이콘을 눌러 손 모드'),
+                    subtitle: Text('한 번 더 누르면 필기로 복귀'),
                   ),
-                ),
-                if (status.isNotEmpty) Text(status),
-                const Divider(height: 32),
-                Text(
-                  'AI 연결 · 선택',
-                  style: Theme.of(context).textTheme.titleLarge,
-                ),
-                AISettings(
-                  key: aiKey,
-                  workspace: widget.workspace,
-                  embedded: true,
-                ),
-                const Divider(height: 32),
-                const Text(
-                  'API 키와 토큰은 기기의 보안 저장소에 보관됩니다. 연결은 나중에도 변경할 수 있습니다.',
-                ),
+                  const Padding(
+                    padding: EdgeInsets.only(top: 8),
+                    child: Text('설정 → 읽기 · 필기에서 조작을 바꿀 수 있어요.'),
+                  ),
+                ] else ...[
+                  const Text('연결은 선택입니다. PDF 읽기와 필기는 바로 쓸 수 있어요.'),
+                  const SizedBox(height: 12),
+                  ExpansionTile(
+                    initiallyExpanded: !canvasConfigured,
+                    maintainState: true,
+                    leading: const Icon(Icons.school_outlined),
+                    title: const Text('Canvas'),
+                    subtitle: Text(canvasConfigured ? '연결 저장됨' : '학교 주소와 토큰'),
+                    childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                    children: [
+                      TextField(
+                        controller: url,
+                        keyboardType: TextInputType.url,
+                        decoration: const InputDecoration(
+                          labelText: '학교 Canvas HTTPS 주소',
+                          hintText: 'https://학교 Canvas 주소',
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: token,
+                        obscureText: true,
+                        autocorrect: false,
+                        enableSuggestions: false,
+                        decoration: const InputDecoration(
+                          labelText: 'Canvas 개인 액세스 토큰',
+                          helperText: 'Canvas → 계정 → 설정 → 새 액세스 토큰',
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: FilledButton(
+                          onPressed: busy ? null : connect,
+                          child: const Text('학교 연결 확인 및 저장'),
+                        ),
+                      ),
+                    ],
+                  ),
+                  ExpansionTile(
+                    initiallyExpanded: !aiConfigured,
+                    maintainState: true,
+                    leading: const Icon(Icons.auto_awesome_outlined),
+                    title: const Text('AI'),
+                    subtitle: Text(
+                      aiConfigured ? '연결 저장됨' : '제공자 · API 키 · 모델',
+                    ),
+                    children: [
+                      AISettings(
+                        key: aiKey,
+                        workspace: widget.workspace,
+                        embedded: true,
+                      ),
+                    ],
+                  ),
+                ],
               ],
             ),
           ),

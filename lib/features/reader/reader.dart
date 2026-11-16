@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
@@ -63,15 +64,19 @@ class _DocumentReaderState extends State<DocumentReader> {
   late String fitMode = savedView.fit;
   bool restoredView = false;
   double? interactionZoom;
+  final navigationTouches = <int, Offset>{};
+  final activeStylusPointers = <int>{};
   final returnLocations =
       <({Offset center, double zoom, int page, String fit})>[];
   late List<PenPreset> presets = PenPreset.read(widget.workspace);
   bool questionFocus = false;
-  String inkTool = 'pen';
+  late String inkTool =
+      widget.workspace.preferences['reader.startTool'] == 'read'
+      ? 'read'
+      : 'pen';
   bool temporaryEraser = false;
   String lastWritingTool = 'pen';
   bool focusReading = false;
-  late bool penOnly = widget.workspace.preferences['reader.penOnly'] != 'false';
   late final inkWidths = {
     for (final tool in ['pen', 'marker', 'line']) tool: readInkWidth(tool),
   };
@@ -999,7 +1004,6 @@ class _DocumentReaderState extends State<DocumentReader> {
     );
     if (mounted) {
       setState(() {
-        penOnly = widget.workspace.preferences['reader.penOnly'] != 'false';
         readingTheme =
             (int.tryParse(widget.workspace.preferences['reader.theme'] ?? '') ??
                     0)
@@ -1258,6 +1262,7 @@ class _DocumentReaderState extends State<DocumentReader> {
 
   Widget writingToolbar() => ReaderToolbar(
     tool: inkTool,
+    lastWritingTool: lastWritingTool,
     onTool: chooseTool,
     temporaryEraser: temporaryEraser,
     color: activeColor,
@@ -1328,8 +1333,75 @@ class _DocumentReaderState extends State<DocumentReader> {
                 0,
               ],
       ),
-      child: viewer,
+      child: Listener(
+        onPointerDown: startNavigationTouch,
+        onPointerMove: updateNavigationTouch,
+        onPointerUp: endNavigationTouch,
+        onPointerCancel: endNavigationTouch,
+        child: viewer,
+      ),
     );
+  }
+
+  void startNavigationTouch(PointerDownEvent event) {
+    if (event.kind == PointerDeviceKind.stylus ||
+        event.kind == PointerDeviceKind.invertedStylus) {
+      activeStylusPointers.add(event.pointer);
+    }
+    if (event.kind != PointerDeviceKind.touch) return;
+    navigationTouches[event.pointer] = event.position;
+    final count = navigationTouches.length;
+    if ((count == 2 || (count == 1 && oneFingerNavigation)) &&
+        controller.isReady) {
+      controller.stopInteractiveViewerAnimation();
+    }
+  }
+
+  bool get oneFingerNavigation =>
+      widget.workspace.preferences['reader.touchNavigation'] == 'oneFinger';
+
+  void updateNavigationTouch(PointerMoveEvent event) {
+    final previous = navigationTouches[event.pointer];
+    if (previous == null) return;
+    navigationTouches[event.pointer] = event.position;
+    final count = navigationTouches.length;
+    if ((count != 2 && !(count == 1 && oneFingerNavigation)) ||
+        activeStylusPointers.isNotEmpty ||
+        !controller.isReady) {
+      return;
+    }
+
+    var previousFocus = previous;
+    var nextFocus = event.position;
+    var scale = 1.0;
+    if (count == 2) {
+      final other = navigationTouches.entries
+          .firstWhere((touch) => touch.key != event.pointer)
+          .value;
+      final oldDistance = (previous - other).distance;
+      if (oldDistance < 1) return;
+      previousFocus = (previous + other) / 2;
+      nextFocus = (event.position + other) / 2;
+      scale = (event.position - other).distance / oldDistance;
+    }
+    final anchor = controller.globalToDocument(previousFocus);
+    final focalPoint = controller.globalToLocal(nextFocus);
+    if (anchor == null || focalPoint == null) return;
+    final oldZoom = controller.currentZoom;
+    final zoom = (oldZoom * scale).clamp(
+      controller.minScale,
+      controller.maxScale,
+    );
+    final center =
+        anchor + (controller.viewSize.center(Offset.zero) - focalPoint) / zoom;
+    controller.value = controller.calcMatrixFor(center, zoom: zoom);
+    if ((oldZoom - controller.currentZoom).abs() > .000001) fitMode = 'custom';
+    rememberView();
+  }
+
+  void endNavigationTouch(PointerEvent event) {
+    navigationTouches.remove(event.pointer);
+    activeStylusPointers.remove(event.pointer);
   }
 
   Widget pdfViewer(File file, WorkspaceObject doc) => PdfViewer.file(
@@ -1337,7 +1409,8 @@ class _DocumentReaderState extends State<DocumentReader> {
     controller: controller,
     initialPageNumber: page,
     params: PdfViewerParams(
-      panEnabled: inkTool == 'read' || penOnly,
+      panEnabled: false,
+      scaleEnabled: false,
       textSelectionParams: PdfTextSelectionParams(enabled: inkTool == 'read'),
       onInteractionStart: (_) => interactionZoom = controller.currentZoom,
       onInteractionEnd: (_) {
@@ -1416,7 +1489,10 @@ class _DocumentReaderState extends State<DocumentReader> {
           child: InkSurface(
             key: ValueKey('ink-${pdfPage.pageNumber}-$inkTool'),
             tool: inkTool,
-            penOnly: penOnly,
+            penOnly: true,
+            stylusButtonEraser:
+                widget.workspace.preferences['reader.stylusButtonEraser'] !=
+                'false',
             onTemporaryEraser: (value) {
               if (mounted && value != temporaryEraser) {
                 setState(() => temporaryEraser = value);

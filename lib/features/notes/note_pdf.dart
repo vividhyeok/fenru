@@ -1,8 +1,29 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:markdown/markdown.dart' as md;
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pdf;
+
+String notePdfFileName(String title) {
+  final safeName = title
+      .replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1f]'), '_')
+      .replaceAll(RegExp(r'[ .]+$'), '');
+  return '${safeName.isEmpty ? 'Fenru' : safeName}.pdf';
+}
+
+Future<Uri?> saveNotePdfFile(
+  String title,
+  Uint8List bytes, {
+  required String dialogTitle,
+}) => FilePicker.saveFile(
+  dialogTitle: dialogTitle,
+  fileName: notePdfFileName(title),
+  type: FileType.custom,
+  allowedExtensions: ['pdf'],
+  bytes: bytes,
+  mimeType: 'application/pdf',
+);
 
 Future<Uint8List> renderNotePdf(
   String title,
@@ -163,17 +184,32 @@ Future<Uint8List> buildNotePdf({
         return;
       }
       if (node.tag == 'table') {
-        for (final section in children.whereType<md.Element>()) {
-          for (final row in (section.children ?? []).whereType<md.Element>()) {
-            final cells = row.children ?? [];
-            yield paragraph([
-              for (var i = 0; i < cells.length; i++) ...[
-                if (i > 0) const pdf.TextSpan(text: '  │  '),
-                inline(cells[i]),
-              ],
-            ], heading: section.tag == 'thead');
-          }
-        }
+        yield pdf.Table(
+          border: pdf.TableBorder.all(color: PdfColors.grey400, width: .5),
+          defaultVerticalAlignment: pdf.TableCellVerticalAlignment.top,
+          children: [
+            for (final section in children.whereType<md.Element>())
+              for (final row
+                  in (section.children ?? []).whereType<md.Element>())
+                pdf.TableRow(
+                  repeat: section.tag == 'thead',
+                  decoration: section.tag == 'thead'
+                      ? const pdf.BoxDecoration(color: PdfColors.blueGrey100)
+                      : null,
+                  children: [
+                    for (final cell in row.children ?? [])
+                      pdf.Padding(
+                        padding: const pdf.EdgeInsets.all(6),
+                        child: paragraph(
+                          [inline(cell)],
+                          size: 10,
+                          heading: section.tag == 'thead',
+                        ),
+                      ),
+                  ],
+                ),
+          ],
+        );
         yield pdf.SizedBox(height: 8);
         return;
       }

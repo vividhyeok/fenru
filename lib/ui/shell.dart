@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:path/path.dart' as p;
@@ -11,6 +13,9 @@ import '../core/models.dart';
 import '../core/workspace.dart';
 import '../integrations/pdf_conversion.dart';
 import '../features/backup/backup_service.dart';
+import '../features/sync/drive_auth.dart';
+import '../features/sync/drive_store.dart';
+import '../features/sync/drive_sync.dart';
 import '../features/reader/reader.dart';
 import '../features/reader/reading_tools.dart';
 import '../features/reader/reader_settings.dart';
@@ -36,6 +41,13 @@ class _FenruShellState extends State<FenruShell> {
   Workspace get w => widget.workspace;
   int tab = 0;
   bool busy = false, dragging = false, trash = false;
+  bool canvasPanelOpen = false, canvasImportRunning = false;
+  final canvasActivity = <({String message, IconData icon})>[];
+  final driveAuth = DriveAuth(SecureCredentials());
+  late final AppLifecycleListener driveLifecycle;
+  Timer? driveTimer;
+  bool driveBusy = false;
+  String driveStatus = '';
   String query = '', folder = '', status = '', error = '';
   final searchFocus = FocusNode();
   final searchController = TextEditingController();
@@ -50,11 +62,202 @@ class _FenruShellState extends State<FenruShell> {
     Icons.calendar_month_outlined,
     Icons.settings_outlined,
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    driveLifecycle = AppLifecycleListener(onResume: automaticDriveSync);
+    if (driveAccount.isNotEmpty) startDrivePolling();
+    WidgetsBinding.instance.addPostFrameCallback((_) => automaticDriveSync());
+  }
+
+  void startDrivePolling() {
+    driveTimer ??= Timer.periodic(
+      const Duration(minutes: 2),
+      (_) => automaticDriveSync(),
+    );
+  }
+
   @override
   void dispose() {
+    driveLifecycle.dispose();
+    driveTimer?.cancel();
     searchFocus.dispose();
     searchController.dispose();
     super.dispose();
+  }
+
+  String get driveAccount => w.preferences['drive.account'] ?? '';
+  bool get driveAutomatic => w.preferences['drive.automatic'] != 'false';
+
+  void automaticDriveSync() {
+    if (!mounted ||
+        !driveAutomatic ||
+        WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed) {
+      return;
+    }
+    unawaited(syncDrive());
+  }
+
+  Future<void> syncDrive({
+    bool connect = false,
+    bool interactive = false,
+  }) async {
+    if (driveBusy || (!connect && driveAccount.isEmpty)) return;
+    setState(() {
+      driveBusy = true;
+      driveStatus = connect ? 'Google 연결 중…' : '동기화 중…';
+    });
+    try {
+      String? desktopJson;
+      if (connect && Platform.isWindows) {
+        final picked = await FilePicker.pickFiles(
+          type: FileType.custom,
+          allowedExtensions: ['json'],
+        );
+        if (picked.isEmpty) {
+          if (mounted) setState(() => driveStatus = '');
+          return;
+        }
+        final bytes = <int>[];
+        await for (final chunk in picked.single.readAsByteStream()) {
+          bytes.addAll(chunk);
+          if (bytes.length > 64 * 1024) {
+            throw const UserFacingException('데스크톱 OAuth JSON 파일을 확인하세요.');
+          }
+        }
+        desktopJson = utf8.decode(bytes);
+      }
+      final access = await driveAuth.token(
+        interactive: connect || interactive,
+        selectAccount: connect,
+        desktopJson: desktopJson,
+      );
+      final store = GoogleDriveStore(access);
+      var account = driveAccount;
+      if (connect) {
+        account = await store.accountId();
+        await w.setPreference('drive.account', account);
+        if (mounted) startDrivePolling();
+      }
+      final result = await DriveSync(w, store).sync(account);
+      await w.setPreference('drive.lastSync', DateTime.now().toIso8601String());
+      if (mounted) {
+        setState(
+          () => driveStatus =
+              '가져옴 ${result.imported} · 보냄 ${result.uploaded} · 충돌 ${result.conflicts}',
+        );
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(
+          () => driveStatus = error is UserFacingException
+              ? error.message
+              : error is PlatformException
+              ? (error.message ?? 'Google Drive 연결을 확인하세요.')
+              : '동기화에 실패했습니다. 네트워크와 Google 연결을 확인하세요.',
+        );
+      }
+    } finally {
+      if (mounted) setState(() => driveBusy = false);
+    }
+  }
+
+  Future<void> disconnectDrive() async {
+    if (driveBusy) return;
+    setState(() => driveBusy = true);
+    try {
+      await w.setPreference('drive.account', '');
+      driveTimer?.cancel();
+      driveTimer = null;
+      await driveAuth.disconnect();
+      await w.setPreference('drive.lastSync', '');
+      if (mounted) setState(() => driveStatus = '이 기기의 연결을 해제했습니다.');
+    } catch (_) {
+      if (mounted) setState(() => driveStatus = '연결 해제를 마치지 못했습니다.');
+    } finally {
+      if (mounted) setState(() => driveBusy = false);
+    }
+  }
+
+  Widget driveSettings() {
+    final connected = driveAccount.isNotEmpty;
+    final last = DateTime.tryParse(w.preferences['drive.lastSync'] ?? '');
+    final labels = MaterialLocalizations.of(context);
+    return ExpansionTile(
+      tilePadding: EdgeInsets.zero,
+      leading: const Icon(Icons.cloud_outlined),
+      title: const Text('Google Drive'),
+      subtitle: Text(
+        driveBusy
+            ? driveStatus
+            : connected
+            ? '양방향 동기화 연결됨'
+            : '기기 간 동기화',
+      ),
+      children: [
+        if (!connected)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Text(
+              Platform.isWindows
+                  ? '같은 Google 계정과 프로젝트의 데스크톱 OAuth JSON 파일을 사용하세요.'
+                  : '같은 Google 계정으로 Google Drive 연결을 승인하세요.',
+            ),
+          ),
+        if (connected)
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            value: driveAutomatic,
+            title: const Text('앱 사용 중 자동 동기화'),
+            onChanged: driveBusy
+                ? null
+                : (value) => run(() async {
+                    await w.setPreference('drive.automatic', '$value');
+                    if (value) automaticDriveSync();
+                  }),
+          ),
+        if (last != null)
+          Text(
+            '마지막 동기화 ${labels.formatShortDate(last)} '
+            '${labels.formatTimeOfDay(TimeOfDay.fromDateTime(last))}',
+          ),
+        if (driveStatus.isNotEmpty && !driveBusy) Text(driveStatus),
+        if (driveBusy) const LinearProgressIndicator(),
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Wrap(
+            spacing: 8,
+            children: [
+              FilledButton.icon(
+                onPressed: driveBusy
+                    ? null
+                    : connected
+                    ? () => syncDrive(interactive: true)
+                    : () => syncDrive(connect: true),
+                icon: Icon(connected ? Icons.sync : Icons.link),
+                label: Text(connected ? '지금 동기화' : 'Google Drive 연결'),
+              ),
+              if (connected)
+                TextButton(
+                  onPressed: driveBusy ? null : disconnectDrive,
+                  child: const Text('이 기기 연결 해제'),
+                ),
+              if (!connected)
+                TextButton(
+                  onPressed: () => launchUrl(
+                    Uri.parse(
+                      'https://github.com/vividhyeok/fenru/blob/main/docs/USER_GUIDE.md#google-drive',
+                    ),
+                    mode: LaunchMode.externalApplication,
+                  ),
+                  child: const Text('연결 설정 안내'),
+                ),
+            ],
+          ),
+        ),
+      ],
+    );
   }
 
   Future<void> run(
@@ -483,7 +686,9 @@ class _FenruShellState extends State<FenruShell> {
             subtitle: const Text('한 화면에서 연결을 설정하고 바로 시작하세요.'),
             onTap: () => Navigator.push(
               context,
-              MaterialPageRoute<void>(builder: (_) => Onboarding(workspace: w)),
+              MaterialPageRoute<void>(
+                builder: (_) => Onboarding(workspace: w, showSetup: true),
+              ),
             ),
           ),
         Wrap(
@@ -816,46 +1021,97 @@ class _FenruShellState extends State<FenruShell> {
     }
     if (chosen == null) return;
     await selection.save(chosen);
-    final summaries = <String>[];
-    var hasWarnings = false;
-    for (final course in chosen) {
-      final report = await provider.importCourse(w, course, (message) {
-        if (mounted) setState(() => status = message);
+    if (mounted) {
+      setState(() {
+        canvasActivity.clear();
+        canvasPanelOpen = true;
+        canvasImportRunning = true;
+        status = '';
       });
-      summaries.add('${course['name'] ?? course['id']}\n${report.summary}');
-      summaries.addAll(report.warnings);
-      hasWarnings = hasWarnings || report.warnings.isNotEmpty;
-      if (report.imported == 0 &&
-          report.unchanged == 0 &&
-          report.contentSaved == 0) {
-        summaries.add(
-          '내려받을 문서 파일이 발견되지 않았습니다. 영상·퀴즈·설문은 다운로드하지 않습니다. 아래 경고와 학교 강의실의 원본 문서 다운로드 제공 여부를 확인하세요.',
-        );
-      }
     }
-    await w.setPreference('canvasLastSync', DateTime.now().toIso8601String());
-    await w.setPreference('canvasImportSummary', summaries.join('\n\n'));
-    if (mounted && hasWarnings) {
-      await showDialog<void>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Canvas 가져오기 결과'),
-          content: SizedBox(
-            width: 560,
-            child: SingleChildScrollView(
-              child: SelectableText(summaries.join('\n\n')),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('확인'),
-            ),
-          ],
-        ),
+    final summaries = <String>[];
+    try {
+      for (final (index, course) in chosen.indexed) {
+        final title = '${course['name'] ?? course['id']}';
+        addCanvasActivity(
+          '과목 ${index + 1}/${chosen.length} · $title',
+          Icons.school_outlined,
+        );
+        final report = await provider.importCourse(w, course, (message) {
+          final icon = message.startsWith('발견 ·')
+              ? Icons.description_outlined
+              : message.startsWith('저장 ')
+              ? Icons.download_outlined
+              : Icons.search;
+          addCanvasActivity(message, icon);
+        });
+        summaries.add('$title\n${report.summary}');
+        addCanvasActivity(
+          '$title · ${report.summary}',
+          Icons.check_circle_outline,
+        );
+        summaries.addAll(report.warnings);
+        for (final warning in report.warnings) {
+          addCanvasActivity(warning, Icons.warning_amber_outlined);
+        }
+        if (report.imported == 0 &&
+            report.unchanged == 0 &&
+            report.contentSaved == 0) {
+          const empty = '가져올 문서나 본문이 발견되지 않았습니다.';
+          summaries.add(empty);
+          addCanvasActivity(empty, Icons.info_outline);
+        }
+      }
+      await w.setPreference('canvasLastSync', DateTime.now().toIso8601String());
+      await w.setPreference('canvasImportSummary', summaries.join('\n\n'));
+    } catch (e) {
+      addCanvasActivity(
+        e is UserFacingException ? e.message : 'Canvas 가져오기에 실패했습니다.',
+        Icons.error_outline,
       );
+      rethrow;
+    } finally {
+      if (mounted) setState(() => canvasImportRunning = false);
     }
   }, label: 'Canvas 과목을 확인하고 있습니다…');
+
+  void addCanvasActivity(String message, IconData icon) {
+    if (mounted) {
+      setState(() => canvasActivity.add((message: message, icon: icon)));
+    }
+  }
+
+  Widget canvasProgressPanel() => Card(
+    margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        ListTile(
+          title: Text(canvasImportRunning ? 'Canvas 가져오는 중' : 'Canvas 가져오기 내역'),
+          trailing: TextButton(
+            onPressed: () => setState(() => canvasPanelOpen = false),
+            child: const Text('숨기기'),
+          ),
+        ),
+        if (canvasImportRunning) const LinearProgressIndicator(),
+        SizedBox(
+          height: (MediaQuery.sizeOf(context).height * 0.25).clamp(80.0, 240.0),
+          child: ListView.builder(
+            primary: false,
+            itemCount: canvasActivity.length,
+            itemBuilder: (context, index) {
+              final entry = canvasActivity[canvasActivity.length - 1 - index];
+              return ListTile(
+                dense: true,
+                leading: Icon(entry.icon, size: 20),
+                title: Text(entry.message),
+              );
+            },
+          ),
+        ),
+      ],
+    ),
+  );
   Widget courses() {
     final items = w.ofKind('course');
     return ListView(
@@ -994,7 +1250,7 @@ class _FenruShellState extends State<FenruShell> {
         contentPadding: EdgeInsets.zero,
         leading: const Icon(Icons.draw_outlined),
         title: const Text('읽기 · 필기 설정'),
-        subtitle: const Text('손가락 입력 · 읽기 배경'),
+        subtitle: const Text('시작 도구 · 손가락 이동 · S펜 버튼'),
         onTap: () => Navigator.push(
           context,
           MaterialPageRoute<void>(builder: (_) => ReaderSettings(workspace: w)),
@@ -1052,12 +1308,7 @@ class _FenruShellState extends State<FenruShell> {
           MaterialPageRoute<void>(builder: (_) => AISettings(workspace: w)),
         ),
       ),
-      const ListTile(
-        contentPadding: EdgeInsets.zero,
-        leading: Icon(Icons.cloud_outlined),
-        title: Text('Google Drive'),
-        subtitle: Text('자동 동기화는 개발 중입니다. 기기 간 이동은 ZIP 백업과 병합 복원을 이용하세요.'),
-      ),
+      driveSettings(),
       const Divider(height: 32),
       Text('데이터와 백업', style: Theme.of(context).textTheme.titleMedium),
       const SizedBox(height: 12),
@@ -1095,10 +1346,10 @@ class _FenruShellState extends State<FenruShell> {
         contentPadding: EdgeInsets.zero,
         leading: const Icon(Icons.school_outlined),
         title: const Text('시작 안내 다시 보기'),
-        onTap: () => run(() async {
-          await w.setPreference('onboardingStep', '0');
-          await w.setPreference('onboarding', '');
-        }),
+        onTap: () => Navigator.push(
+          context,
+          MaterialPageRoute<void>(builder: (_) => Onboarding(workspace: w)),
+        ),
       ),
       ListTile(
         contentPadding: EdgeInsets.zero,
@@ -1145,6 +1396,17 @@ class _FenruShellState extends State<FenruShell> {
             ],
           ),
           actions: [
+            if (canvasActivity.isNotEmpty && !canvasPanelOpen)
+              IconButton(
+                tooltip: canvasImportRunning
+                    ? 'Canvas 가져오기 진행 보기'
+                    : 'Canvas 가져오기 내역 보기',
+                onPressed: () => setState(() => canvasPanelOpen = true),
+                icon: Badge(
+                  isLabelVisible: canvasImportRunning,
+                  child: const Icon(Icons.download_outlined),
+                ),
+              ),
             IconButton(
               tooltip: '도움말',
               onPressed: help,
@@ -1176,7 +1438,9 @@ class _FenruShellState extends State<FenruShell> {
                 ),
               ),
             ),
-            if (busy) const LinearProgressIndicator(),
+            if (canvasPanelOpen) canvasProgressPanel(),
+            if (busy && !(canvasPanelOpen && canvasImportRunning))
+              const LinearProgressIndicator(),
             if (error.isNotEmpty)
               MaterialBanner(
                 content: Text(error),

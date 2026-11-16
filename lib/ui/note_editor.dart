@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -45,10 +44,6 @@ class _NoteEditorState extends State<NoteEditor> with WidgetsBindingObserver {
     setState(() => exporting = true);
     final name = displayTitle;
     final markdown = body.text;
-    final safeName = name
-        .replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1f]'), '_')
-        .replaceAll(RegExp(r'[ .]+$'), '');
-    final fileName = '${safeName.isEmpty ? 'Fenru note' : safeName}.pdf';
     try {
       await save();
       if (!mounted || dirty || saving) return;
@@ -61,20 +56,17 @@ class _NoteEditorState extends State<NoteEditor> with WidgetsBindingObserver {
               .writeAsBytes(bytes);
           final document = await widget.workspace.importFile(
             file.path,
-            displayName: fileName,
+            displayName: notePdfFileName(name),
           );
           if (mounted) await openSource(document.id);
         } finally {
           await temporary.delete(recursive: true);
         }
       } else {
-        final result = await FilePicker.saveFile(
+        final result = await saveNotePdfFile(
+          name,
+          bytes,
           dialogTitle: '노트를 PDF로 저장',
-          fileName: fileName,
-          type: FileType.custom,
-          allowedExtensions: ['pdf'],
-          bytes: bytes,
-          mimeType: 'application/pdf',
         );
         if (result != null && mounted) {
           ScaffoldMessenger.of(context)

@@ -5,6 +5,18 @@ import '../../core/workspace.dart';
 class ReaderSettings extends StatelessWidget {
   const ReaderSettings({super.key, required this.workspace});
   final Workspace workspace;
+
+  Future<void> save(BuildContext context, String key, String value) async {
+    try {
+      await workspace.setPreference(key, value);
+    } catch (_) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('설정을 저장하지 못했습니다.')));
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(title: const Text('읽기 · 필기 설정')),
@@ -13,24 +25,45 @@ class ReaderSettings extends StatelessWidget {
       builder: (context, _) => ListView(
         padding: const EdgeInsets.all(20),
         children: [
-          const Text('S펜으로 바로 쓰고, 버튼을 누른 동안 지웁니다. 버튼을 놓으면 사용하던 필기 도구로 돌아갑니다.'),
+          DropdownButtonFormField<String>(
+            initialValue: workspace.preferences['reader.startTool'] == 'read'
+                ? 'read'
+                : 'pen',
+            decoration: const InputDecoration(labelText: '문서를 열 때'),
+            items: const [
+              DropdownMenuItem(value: 'pen', child: Text('펜 모드')),
+              DropdownMenuItem(value: 'read', child: Text('손 모드')),
+            ],
+            onChanged: (value) {
+              if (value != null) save(context, 'reader.startTool', value);
+            },
+          ),
           const SizedBox(height: 16),
+          DropdownButtonFormField<String>(
+            initialValue:
+                workspace.preferences['reader.touchNavigation'] == 'oneFinger'
+                ? 'oneFinger'
+                : 'twoFingers',
+            decoration: const InputDecoration(
+              labelText: '화면 이동',
+              helperText: '확대·축소는 두 손가락',
+            ),
+            items: const [
+              DropdownMenuItem(value: 'twoFingers', child: Text('두 손가락')),
+              DropdownMenuItem(value: 'oneFinger', child: Text('한 손가락도 허용')),
+            ],
+            onChanged: (value) {
+              if (value != null) save(context, 'reader.touchNavigation', value);
+            },
+          ),
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
-            title: const Text('손가락으로 필기'),
-            subtitle: const Text('끄면 손가락은 문서 이동·확대에 사용합니다.'),
-            value: workspace.preferences['reader.penOnly'] == 'false',
-            onChanged: (value) async {
-              try {
-                await workspace.setPreference('reader.penOnly', '${!value}');
-              } catch (_) {
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('설정을 저장하지 못했습니다.')),
-                  );
-                }
-              }
-            },
+            title: const Text('S펜 버튼으로 지우기'),
+            subtitle: const Text('누르는 동안만 지우개'),
+            value:
+                workspace.preferences['reader.stylusButtonEraser'] != 'false',
+            onChanged: (value) =>
+                save(context, 'reader.stylusButtonEraser', '$value'),
           ),
           const Divider(height: 32),
           DropdownButtonFormField<int>(
@@ -43,17 +76,8 @@ class ReaderSettings extends StatelessWidget {
               DropdownMenuItem(value: 1, child: Text('따뜻하게')),
               DropdownMenuItem(value: 2, child: Text('야간 읽기')),
             ],
-            onChanged: (value) async {
-              if (value == null) return;
-              try {
-                await workspace.setPreference('reader.theme', '$value');
-              } catch (_) {
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('설정을 저장하지 못했습니다.')),
-                  );
-                }
-              }
+            onChanged: (value) {
+              if (value != null) save(context, 'reader.theme', '$value');
             },
           ),
         ],

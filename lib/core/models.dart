@@ -46,6 +46,8 @@ class WorkspaceObject {
       'resource',
       'chat',
       'message',
+      'review',
+      'studyAnchor',
     };
     if (!kinds.contains(j['kind']) ||
         j['revision'] is! int ||

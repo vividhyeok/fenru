@@ -14,6 +14,7 @@ import 'settings.dart';
 import 'review.dart';
 import 'study_context.dart';
 import '../reader/reader.dart';
+import '../notes/note_pdf.dart';
 
 export 'study_context.dart' show DocumentContext;
 
@@ -676,6 +677,36 @@ class _AIChatState extends State<AIChat> {
       followBottom = true;
     });
     scrollToEnd();
+  }
+
+  bool exportingPdf = false;
+
+  Future<void> exportConversationPdf() async {
+    if (exportingPdf) return;
+    final conversation = messages;
+    if (conversation.isEmpty) return;
+    final title = '$scopeName · AI 대화';
+    final markdown = conversation
+        .map((message) {
+          final role = message.text('role') == 'assistant' ? 'AI 답변' : '질문';
+          return '## $role\n\n${message.text('body')}';
+        })
+        .join('\n\n');
+    setState(() => exportingPdf = true);
+    try {
+      final bytes = await renderNotePdf(title, markdown);
+      if (!mounted) return;
+      final result = await saveNotePdfFile(
+        title,
+        bytes,
+        dialogTitle: '대화를 PDF로 저장',
+      );
+      if (mounted && result != null) feedback('대화 PDF를 저장했습니다.');
+    } catch (_) {
+      if (mounted) feedback('대화 PDF를 만들거나 저장하지 못했습니다.');
+    } finally {
+      if (mounted) setState(() => exportingPdf = false);
+    }
   }
 
   Future<void> showHistory() async {
@@ -1762,14 +1793,23 @@ class _AIChatState extends State<AIChat> {
                 if (value == 'new') switchSession(null);
                 if (value == 'history') showHistory();
                 if (value == 'notes') showNotes();
+                if (value == 'pdf') exportConversationPdf();
                 if (value == 'settings') configure();
               },
-              itemBuilder: (_) => const [
-                PopupMenuItem(value: 'context', child: Text('참고 범위 · 모델')),
-                PopupMenuItem(value: 'new', child: Text('새 대화')),
-                PopupMenuItem(value: 'history', child: Text('이전 대화')),
-                PopupMenuItem(value: 'notes', child: Text('연결된 학습 노트')),
-                PopupMenuItem(value: 'settings', child: Text('AI 설정')),
+              itemBuilder: (_) => [
+                const PopupMenuItem(
+                  value: 'context',
+                  child: Text('참고 범위 · 모델'),
+                ),
+                const PopupMenuItem(value: 'new', child: Text('새 대화')),
+                const PopupMenuItem(value: 'history', child: Text('이전 대화')),
+                const PopupMenuItem(value: 'notes', child: Text('연결된 학습 노트')),
+                PopupMenuItem(
+                  value: 'pdf',
+                  enabled: history.isNotEmpty && !exportingPdf,
+                  child: Text(exportingPdf ? 'PDF 만드는 중…' : '대화를 PDF로 저장'),
+                ),
+                const PopupMenuItem(value: 'settings', child: Text('AI 설정')),
               ],
             ),
           ],

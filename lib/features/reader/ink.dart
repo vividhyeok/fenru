@@ -50,6 +50,7 @@ class InkSurface extends StatefulWidget {
     required this.width,
     required this.onSave,
     this.penOnly = false,
+    this.stylusButtonEraser = true,
     this.onErasePreview,
     this.onPreviewEnd,
     this.onTemporaryEraser,
@@ -58,6 +59,7 @@ class InkSurface extends StatefulWidget {
   final VoidCallback? onPreviewEnd;
   final ValueChanged<bool>? onTemporaryEraser;
   final bool penOnly;
+  final bool stylusButtonEraser;
   final String tool;
   final int color;
   final double width;
@@ -70,12 +72,14 @@ class _InkSurfaceState extends State<InkSurface> {
   List<List<double>> points = [];
   final segments = <Map<String, dynamic>>[];
   int? pointer;
+  Offset? lastPosition;
   bool erasing = false;
   bool saving = false;
   bool eraseFor(PointerEvent event) =>
       widget.tool == 'eraser' ||
       event.kind == PointerDeviceKind.invertedStylus ||
-      (event.kind == PointerDeviceKind.stylus &&
+      (widget.stylusButtonEraser &&
+          event.kind == PointerDeviceKind.stylus &&
           (event.buttons & (kPrimaryStylusButton | kSecondaryStylusButton)) !=
               0);
 
@@ -175,6 +179,7 @@ class _InkSurfaceState extends State<InkSurface> {
               return;
             }
             pointer = event.pointer;
+            lastPosition = event.localPosition;
             updateEraser(eraseFor(event));
             points = [];
             if (widget.tool != 'read' || erasing) {
@@ -183,24 +188,30 @@ class _InkSurfaceState extends State<InkSurface> {
           },
           onPointerMove: (event) {
             if (event.pointer != pointer) return;
+            final position = event.localPosition;
+            final moved = position != lastPosition;
+            lastPosition = position;
             final nextErase = eraseFor(event);
             if (nextErase != erasing) {
               if (points.isNotEmpty) segments.add(stroke);
               points = [];
               updateEraser(nextErase);
             }
-            if (widget.tool == 'read' && !erasing) return;
-            add(event.localPosition, box.biggest);
+            // Android can report a button change without any pen movement.
+            if (!moved || (widget.tool == 'read' && !erasing)) return;
+            add(position, box.biggest);
           },
           onPointerUp: (event) {
             if (event.pointer != pointer) return;
             pointer = null;
+            lastPosition = null;
             widget.onTemporaryEraser?.call(false);
             finish();
           },
           onPointerCancel: (event) {
             if (event.pointer == pointer) {
               pointer = null;
+              lastPosition = null;
               widget.onTemporaryEraser?.call(false);
               widget.onPreviewEnd?.call();
               setState(() {

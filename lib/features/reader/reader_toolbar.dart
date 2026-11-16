@@ -15,6 +15,7 @@ class ReaderToolbar extends StatelessWidget {
     required this.pageLabel,
     this.onReturn,
     this.temporaryEraser = false,
+    this.lastWritingTool = 'pen',
     this.presets = const [],
     this.onPreset,
     this.onSavePreset,
@@ -24,7 +25,7 @@ class ReaderToolbar extends StatelessWidget {
     this.width,
     this.onWidth,
   });
-  final String tool, pageLabel;
+  final String tool, pageLabel, lastWritingTool;
   final ValueChanged<String> onTool;
   final VoidCallback onPenSettings, onPages;
   final VoidCallback? onUndo, onRedo, onReturn;
@@ -45,6 +46,15 @@ class ReaderToolbar extends StatelessWidget {
       height: 48,
       child: Row(
         children: [
+          IconButton(
+            tooltip: tool == 'read' ? '필기로 돌아가기' : '읽기 · 선택 · 이동',
+            isSelected: tool == 'read' && !temporaryEraser,
+            onPressed: () => onTool(tool == 'read' ? lastWritingTool : 'read'),
+            icon: Icon(
+              tool == 'read' ? Icons.pan_tool_outlined : Icons.edit_outlined,
+            ),
+          ),
+          const VerticalDivider(width: 1, indent: 10, endIndent: 10),
           Expanded(
             child: SingleChildScrollView(
               scrollDirection: Axis.horizontal,
@@ -61,7 +71,9 @@ class ReaderToolbar extends StatelessWidget {
                           ? item.$1 == 'eraser'
                           : tool == item.$1,
                       onPressed: () {
-                        if (tool == item.$1 && item.$1 != 'eraser') {
+                        if (tool == 'eraser' && item.$1 == 'eraser') {
+                          onTool(lastWritingTool);
+                        } else if (tool == item.$1) {
                           onPenSettings();
                         } else {
                           onTool(item.$1);
@@ -69,12 +81,6 @@ class ReaderToolbar extends StatelessWidget {
                       },
                       icon: Icon(item.$3),
                     ),
-                  IconButton(
-                    tooltip: '읽기 · 선택 · 이동',
-                    isSelected: tool == 'read' && !temporaryEraser,
-                    onPressed: () => onTool('read'),
-                    icon: const Icon(Icons.pan_tool_outlined),
-                  ),
                   IconButton(
                     tooltip: '직선 밑줄',
                     isSelected: tool == 'line' && !temporaryEraser,

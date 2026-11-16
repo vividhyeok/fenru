@@ -41,6 +41,9 @@ class WorkspaceDatabase extends GeneratedDatabase {
       await customStatement('PRAGMA foreign_keys=ON');
       await customStatement('PRAGMA journal_mode=WAL');
       await customStatement('PRAGMA busy_timeout=5000');
+      await customStatement('''CREATE TABLE IF NOT EXISTS drive_applied (
+        account TEXT NOT NULL, name TEXT NOT NULL, PRIMARY KEY(account, name)
+      )''');
     },
   );
 }

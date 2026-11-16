@@ -2,7 +2,7 @@
 
 내 기기에 자료와 학습 기록을 보관하는 Windows / Android용 Flutter 학습 워크스페이스입니다.
 
-**개발 프리릴리스입니다. 전체 제품 요구사항 구현은 완료되지 않았습니다.** Google Drive 자동 동기화는 아직 제공하지 않습니다. AI는 BYOK 방식이며 사용자가 실제 답변 품질이 좋다고 보고했습니다. 자동 검증은 모의 제공자를 사용하며 실제 모델 답변의 정확성을 보장하지 않습니다. [구현 현황](docs/IMPLEMENTATION_STATUS.md)을 확인하세요.
+**개발 프리릴리스입니다. 전체 제품 요구사항 구현은 완료되지 않았습니다.** Google Drive 동기화를 사용하려면 [Google Cloud 설정](docs/USER_GUIDE.md#google-drive)이 필요합니다. AI는 BYOK 방식이며 사용자가 실제 답변 품질이 좋다고 보고했습니다. 자동 검증은 모의 제공자를 사용하며 실제 모델 답변의 정확성을 보장하지 않습니다. [구현 현황](docs/IMPLEMENTATION_STATUS.md)을 확인하세요.
 
 ## 다운로드
 

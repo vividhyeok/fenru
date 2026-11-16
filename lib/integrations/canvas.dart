@@ -322,7 +322,8 @@ class CanvasProvider implements LmsProvider {
     }
     final files = await discoverFiles(courseId, report, progress);
     await saveCourseContents(workspace, local, report);
-    for (final file in files) {
+    progress('문서 후보 ${files.length}개 · 저장 시작');
+    for (final (index, file) in files.indexed) {
       final externalId = '${file['id']}', modified = '${file['updated_at']}';
       final previous = workspace.ofKind('document').where((d) {
         final origin = d.data['origin'];
@@ -337,7 +338,7 @@ class CanvasProvider implements LmsProvider {
         continue;
       }
       final name = p.basename('${file['display_name'] ?? file['filename']}');
-      progress('가져오는 중: $name');
+      progress('저장 ${index + 1}/${files.length} · $name');
       final url = Uri.tryParse('${file['url']}');
       if (url == null || url.scheme != 'https') {
         throw const UserFacingException('안전하지 않은 다운로드 주소입니다.');
@@ -509,12 +510,21 @@ class CanvasProvider implements LmsProvider {
     void Function(String) progress,
   ) async {
     final files = <String, Json>{};
-    final modulePages = <String>{};
+    final modulePages = <String, Set<String>>{};
     var hasLearningX = false;
-    void add(Json file) {
+    void add(Json file, String location) {
       final id = '${file['id']}';
       if (RegExp(r'^(\d+|learningx:[a-zA-Z0-9_-]+)$').hasMatch(id)) {
-        files.putIfAbsent(id, () => file);
+        final found = files.putIfAbsent(id, () => file);
+        final locations = <String>{
+          ...(found['_locations'] as List? ?? []).map((value) => '$value'),
+        };
+        if (locations.add(location)) {
+          found['_locations'] = locations.toList();
+          progress(
+            '발견 · $location · ${found['display_name'] ?? found['filename'] ?? id}',
+          );
+        }
       }
     }
 
@@ -523,7 +533,7 @@ class CanvasProvider implements LmsProvider {
       for (final file in await collection(
         '/api/v1/courses/$courseId/files?per_page=100',
       )) {
-        add(file);
+        add(file, '과목 파일');
       }
     } on CanvasRequestException catch (e) {
       if (!e.restricted) rethrow;
@@ -539,6 +549,8 @@ class CanvasProvider implements LmsProvider {
       for (final module in modules) {
         final moduleId = '${module['id']}';
         if (!RegExp(r'^\d+$').hasMatch(moduleId)) continue;
+        final location = '모듈 · ${module['name'] ?? moduleId}';
+        progress('탐색 · $location');
         List<Json> items;
         try {
           items = await collection(
@@ -551,7 +563,9 @@ class CanvasProvider implements LmsProvider {
         }
         for (final item in items) {
           if (item['type'] == 'Page' && item['page_url'] is String) {
-            modulePages.add(item['page_url'] as String);
+            modulePages
+                .putIfAbsent(item['page_url'] as String, () => <String>{})
+                .add(location);
           }
           final external = Uri.tryParse('${item['external_url']}');
           if (item['type'] == 'ExternalTool' &&
@@ -563,9 +577,14 @@ class CanvasProvider implements LmsProvider {
           }
           if (item['type'] != 'File') continue;
           final id = '${item['content_id']}';
-          if (!RegExp(r'^\d+$').hasMatch(id) || files.containsKey(id)) continue;
+          if (!RegExp(r'^\d+$').hasMatch(id)) continue;
+          final known = files[id];
+          if (known != null) {
+            add(known, location);
+            continue;
+          }
           try {
-            add(await object('/api/v1/courses/$courseId/files/$id'));
+            add(await object('/api/v1/courses/$courseId/files/$id'), location);
           } on CanvasRequestException catch (e) {
             if (!e.restricted) rethrow;
             // The course file list/metadata may be hidden while a published
@@ -577,7 +596,7 @@ class CanvasProvider implements LmsProvider {
                   .resolve('/courses/$courseId/files/$id/download')
                   .toString(),
               '_moduleFallback': true,
-            });
+            }, location);
           }
         }
       }
@@ -596,7 +615,7 @@ class CanvasProvider implements LmsProvider {
         );
         provider.warnings.clear();
         for (final file in await provider.files(courseId)) {
-          add(file);
+          add(file, 'LearningX');
         }
         report.warnings.addAll(provider.warnings);
       } on CanvasRequestException catch (e) {
@@ -623,13 +642,14 @@ class CanvasProvider implements LmsProvider {
   Future<void> discoverContentAttachments(
     String courseId,
     Map<String, Json> files,
-    Set<String> modulePages,
+    Map<String, Set<String>> modulePages,
     CanvasImportReport report,
     void Function(String) progress,
   ) async {
     progress('페이지 · 게시판 · 공지 · 과제의 첨부자료를 확인하고 있습니다…');
     final attempted = <String>{...files.keys};
     Future<List<Json>> list(String path, String name) async {
+      progress('탐색 · $name');
       try {
         return await collection(path);
       } on CanvasRequestException catch (e) {
@@ -655,10 +675,14 @@ class CanvasProvider implements LmsProvider {
       if (match == null) return;
       final id = match.group(1)!;
       if (files.containsKey(id)) {
-        final places =
-            (files[id]!['_locations'] as List? ?? []).map((v) => '$v').toSet()
-              ..add(location);
-        files[id]!['_locations'] = places.toList();
+        final file = files[id]!;
+        final places = (file['_locations'] as List? ?? [])
+            .map((v) => '$v')
+            .toSet();
+        if (places.add(location)) {
+          file['_locations'] = places.toList();
+          progress('발견 · $location · ${file['display_name'] ?? title}');
+        }
         return;
       }
       if (!attempted.add(id)) return;
@@ -680,12 +704,14 @@ class CanvasProvider implements LmsProvider {
         ...file,
         '_locations': [location],
       };
+      progress('발견 · $location · ${file['display_name'] ?? title}');
     }
 
     Future<void> content(
       dynamic value,
       String location, [
       String sourceId = '',
+      Iterable<String> additionalLocations = const [],
     ]) async {
       if (value is List) {
         for (final item in value) {
@@ -715,12 +741,16 @@ class CanvasProvider implements LmsProvider {
         for (final element in doc.querySelectorAll(
           '[href], [data-api-endpoint], [src]',
         )) {
-          final raw =
-              element.attributes['data-api-endpoint'] ??
-              element.attributes['href'] ??
-              element.attributes['src'];
-          if (raw != null) {
+          final links = {
+            element.attributes['data-api-endpoint'],
+            element.attributes['href'],
+            element.attributes['src'],
+          }.whereType<String>();
+          for (final raw in links) {
             await link(raw, element.text, location);
+            for (final place in additionalLocations) {
+              await link(raw, element.text, place);
+            }
           }
         }
       }
@@ -749,6 +779,21 @@ class CanvasProvider implements LmsProvider {
         'entries',
       ]) {
         if (value[key] != null) {
+          if (key == 'attachment' || key == 'attachments') {
+            final attachments = value[key];
+            for (final attachment
+                in (attachments is List ? attachments : [attachments])
+                    .whereType<Map>()) {
+              final id = '${attachment['id'] ?? attachment['file_id'] ?? ''}';
+              if (RegExp(r'^\d+$').hasMatch(id)) {
+                await link(
+                  '/api/v1/courses/$courseId/files/$id',
+                  '${attachment['display_name'] ?? attachment['filename'] ?? ''}',
+                  location,
+                );
+              }
+            }
+          }
           await content(value[key], location, '$sourceId/$key');
         }
       }
@@ -768,7 +813,12 @@ class CanvasProvider implements LmsProvider {
             : await object(
                 '/api/v1/courses/$courseId/pages/${Uri.encodeComponent(slug)}',
               );
-        await content(detail, '페이지 · ${detail['title'] ?? slug}', 'page:$slug');
+        await content(
+          detail,
+          '페이지 · ${detail['title'] ?? slug}',
+          'page:$slug',
+          modulePages[slug] ?? const [],
+        );
       } on CanvasRequestException catch (e) {
         if (e.authenticationFailed) rethrow;
         report.warnings.add('페이지 $slug: 접근할 수 없습니다.');
@@ -778,7 +828,7 @@ class CanvasProvider implements LmsProvider {
     for (final item in pages) {
       await page(item);
     }
-    for (final slug in modulePages) {
+    for (final slug in modulePages.keys) {
       await page({'url': slug});
     }
     for (final announcements in [false, true]) {

@@ -67,11 +67,13 @@ class Workspace extends ChangeNotifier {
     Json data, {
     String? id,
     bool deleted = false,
-  }) {
-    final result = Completer<WorkspaceObject>();
+  }) => serializeWrite(() => _save(kind, data, id: id, deleted: deleted));
+
+  Future<T> serializeWrite<T>(Future<T> Function() action) {
+    final result = Completer<T>();
     _writes = _writes.then((_) async {
       try {
-        result.complete(await _save(kind, data, id: id, deleted: deleted));
+        result.complete(await action());
       } catch (error, stack) {
         result.completeError(error, stack);
       }

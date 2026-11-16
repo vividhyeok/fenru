@@ -32,4 +32,16 @@ PDF 질문 패널의 ‘PDF 참조 범위 선택’에서 PDF 전문, 현재 페
 
 과목 질문의 ‘시험 준비’를 사용하거나 ‘시험 나올 거 짚어줘’라고 질문하세요. 시험 관련 공지/과제 근거와 관련 강의자료를 함께 찾습니다. 교수자가 밝힌 시험 정보와 AI가 제안하는 공부 우선순위를 구분하도록 요청합니다. 실제 출제 문제를 알아내는 기능은 아닙니다.
 
-필기 기본값은 펜·마우스로 필기하고 손가락으로 이동·확대하는 방식입니다. 위쪽 도구줄의 손가락/펜 전환으로 손가락 필기도 선택할 수 있습니다. 읽기·펜·형광펜·지우개·실행 취소·다시 실행을 도구줄에서 바로 누릅니다. 펜 굵기와 색상, 입력 방식도 기억합니다.
+기본 조작은 펜·마우스로 필기하고 두 손가락으로 이동하거나 확대·축소하는 방식입니다. 도구줄 왼쪽 아이콘으로 펜·손 모드를 전환합니다. S펜 버튼을 누르는 동안 지우개가 작동합니다. 시작 도구, 한 손가락 이동, S펜 버튼 동작은 읽기 · 필기 설정에서 바꿀 수 있습니다.
+
+## Google Drive
+
+1. Google Cloud 프로젝트 하나에서 **Google Drive API**를 사용 설정합니다. 동의 화면의 접근 범위에 `https://www.googleapis.com/auth/drive.appdata`를 추가합니다. 테스트 모드에서는 연결할 Google 계정을 테스트 사용자에 등록합니다.
+2. 같은 프로젝트에서 **데스크톱 앱** OAuth 클라이언트를 만들어 JSON을 내려받습니다. **Android** OAuth 클라이언트에는 패키지 `com.vividhyeok.fenru`와 실제 설치 APK의 서명 인증서 SHA-1을 등록합니다. 디버그와 배포 APK의 서명이 다르면 각각 등록합니다.
+3. 각 기기에서 **설정 → Google Drive → Google Drive 연결**을 열고 같은 Google 계정을 선택합니다. Windows는 연결 시작 시 데스크톱 OAuth JSON을 선택합니다. Android는 기기의 Google 계정을 선택합니다.
+
+연결하면 로컬과 Drive 작업공간을 병합합니다. 문서, 필기, 과목, 노트, 대화와 출처가 앱 전용 Drive 폴더에 저장됩니다. Canvas 토큰과 AI 키는 각 기기에 보관됩니다. 앱을 열거나 돌아왔을 때와 사용 중 주기적으로 동기화합니다. 필요하면 **지금 동기화**를 누르세요. 동시 편집은 충돌 복사본으로 확인할 수 있습니다. **이 기기 연결 해제**는 해당 기기의 전송만 중단합니다.
+
+- [데스크톱 OAuth](https://developers.google.com/identity/protocols/oauth2/native-app)
+- [Android OAuth 등록](https://developer.android.com/identity/authorization)
+- [Drive 앱 전용 저장공간](https://developers.google.com/workspace/drive/api/guides/appdata)

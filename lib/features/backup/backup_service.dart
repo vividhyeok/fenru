@@ -22,6 +22,9 @@ Object? _canonical(Object? value) {
   return value;
 }
 
+String canonicalObjectJson(WorkspaceObject object) =>
+    jsonEncode(_canonical(object.toJson()));
+
 MergeOrder compareClocks(WorkspaceObject local, WorkspaceObject remote) {
   final a = Map<String, dynamic>.from(local.data['_clock'] as Map? ?? {});
   final b = Map<String, dynamic>.from(remote.data['_clock'] as Map? ?? {});
@@ -34,8 +37,7 @@ MergeOrder compareClocks(WorkspaceObject local, WorkspaceObject remote) {
   if (greater && less) return MergeOrder.concurrent;
   if (greater) return MergeOrder.localNewer;
   if (less) return MergeOrder.remoteNewer;
-  return jsonEncode(_canonical(local.toJson())) ==
-          jsonEncode(_canonical(remote.toJson()))
+  return canonicalObjectJson(local) == canonicalObjectJson(remote)
       ? MergeOrder.equal
       : MergeOrder.concurrent;
 }
@@ -146,43 +148,45 @@ class BackupService {
       await temp.rename(entry.key);
     }
     int conflicts = 0;
-    await workspace.db.transaction(() async {
-      for (final remote in incoming) {
-        final local = workspace.byId(remote.id);
-        if (local == null) {
-          await workspace.writeObject(remote);
-          continue;
-        }
-        final order = compareClocks(local, remote);
-        if (order == MergeOrder.remoteNewer) {
-          await workspace.writeObject(remote);
-        } else if (order == MergeOrder.concurrent) {
-          final canonicalRemote = utf8.encode(
-            jsonEncode(_canonical(remote.toJson())),
-          );
-          final conflictId = sha256.convert(canonicalRemote).toString();
-          if (workspace.byId(conflictId) == null) {
-            conflicts++;
-            await workspace.writeObject(
-              WorkspaceObject(
-                id: conflictId,
-                kind: remote.kind,
-                data: {
-                  ...remote.data,
-                  'title': '${remote.title} (충돌 복사본)',
-                  'conflictOf': remote.id,
-                  'remoteDeleted': remote.deleted,
-                },
-                revision: remote.revision,
-                device: remote.device,
-                updated: remote.updated,
-              ),
+    await workspace.serializeWrite(() async {
+      await workspace.db.transaction(() async {
+        for (final remote in incoming) {
+          final local = workspace.byId(remote.id);
+          if (local == null) {
+            await workspace.writeObject(remote);
+            continue;
+          }
+          final order = compareClocks(local, remote);
+          if (order == MergeOrder.remoteNewer) {
+            await workspace.writeObject(remote);
+          } else if (order == MergeOrder.concurrent) {
+            final canonicalRemote = utf8.encode(
+              jsonEncode(_canonical(remote.toJson())),
             );
+            final conflictId = sha256.convert(canonicalRemote).toString();
+            if (workspace.byId(conflictId) == null) {
+              conflicts++;
+              await workspace.writeObject(
+                WorkspaceObject(
+                  id: conflictId,
+                  kind: remote.kind,
+                  data: {
+                    ...remote.data,
+                    'title': '${remote.title} (충돌 복사본)',
+                    'conflictOf': remote.id,
+                    'remoteDeleted': remote.deleted,
+                  },
+                  revision: remote.revision,
+                  device: remote.device,
+                  updated: remote.updated,
+                ),
+              );
+            }
           }
         }
-      }
+      });
+      await workspace.reload();
     });
-    await workspace.reload();
     return conflicts;
   }
 }

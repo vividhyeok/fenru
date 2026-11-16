@@ -77,7 +77,9 @@ class AISettingsState extends State<AISettings> {
     }
   });
   bool get needsSave =>
-      keyField.text.trim().isNotEmpty || model.text.trim().isNotEmpty;
+      keyField.text.trim().isNotEmpty ||
+      model.text.trim() !=
+          (widget.workspace.preferences['$prefix.model'] ?? '');
   bool saved = false;
   Future<bool> saveForStart() async {
     if (keyField.text.trim().isEmpty && model.text.trim().isEmpty) return true;
@@ -128,9 +130,7 @@ class AISettingsState extends State<AISettings> {
       physics: widget.embedded ? const NeverScrollableScrollPhysics() : null,
       padding: const EdgeInsets.all(24),
       children: [
-        const Text(
-          'ChatGPT 구독과 API 과금은 별개입니다. 질문과 선택한 문서 내용이 해당 제공자에 전송됩니다.\n모델 목록 조회는 인증 확인이며 텍스트 생성 지원을 보장하지 않습니다.',
-        ),
+        const Text('질문과 선택한 자료는 제공자에 전송됩니다. API는 별도로 과금됩니다.'),
         const SizedBox(height: 20),
         SegmentedButton<AIService>(
           segments: const [
@@ -154,6 +154,7 @@ class AISettingsState extends State<AISettings> {
           decoration: const InputDecoration(
             labelText: '새 API 키',
             hintText: '빈칸이면 저장된 키 유지',
+            helperText: '제공자 콘솔 → API Keys',
           ),
         ),
         const SizedBox(height: 12),

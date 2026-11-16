@@ -97,13 +97,19 @@ void main() {
     );
   });
   testWidgets(
-    'pen-only surface passes finger drag to navigation and consumes stylus drag',
+    'pen-only surface passes finger drag and pinch while keeping stylus ink',
     (tester) async {
       var moves = 0, strokes = 0;
+      var pinched = false;
       await tester.pumpWidget(
         MaterialApp(
           home: GestureDetector(
-            onPanUpdate: (_) => moves++,
+            onScaleUpdate: (details) {
+              moves++;
+              if (details.pointerCount == 2 && details.scale > 1.1) {
+                pinched = true;
+              }
+            },
             child: SizedBox.expand(
               child: InkSurface(
                 penOnly: true,
@@ -125,6 +131,18 @@ void main() {
       await tester.pumpAndSettle();
       expect(moves, greaterThan(0));
       expect(strokes, 0);
+
+      final left = await tester.startGesture(const Offset(150, 200));
+      final right = await tester.startGesture(const Offset(250, 200));
+      await right.moveBy(const Offset(40, 0));
+      await left.moveBy(const Offset(-40, 0));
+      await right.moveBy(const Offset(40, 0));
+      await right.up();
+      await left.up();
+      await tester.pumpAndSettle();
+      expect(pinched, isTrue);
+      expect(strokes, 0);
+
       moves = 0;
       final pen = await tester.startGesture(
         const Offset(100, 100),
@@ -159,6 +177,23 @@ void main() {
         const pointer = 5;
         await tester.sendEventToBinding(
           const PointerDownEvent(
+            pointer: pointer,
+            position: Offset(100, 100),
+            kind: PointerDeviceKind.stylus,
+            buttons: kPrimaryButton,
+          ),
+        );
+        // A press/release with no movement must not create an eraser dot.
+        await tester.sendEventToBinding(
+          PointerMoveEvent(
+            pointer: pointer,
+            position: const Offset(100, 100),
+            kind: PointerDeviceKind.stylus,
+            buttons: button,
+          ),
+        );
+        await tester.sendEventToBinding(
+          const PointerMoveEvent(
             pointer: pointer,
             position: Offset(100, 100),
             kind: PointerDeviceKind.stylus,

@@ -96,6 +96,8 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
+    await tester.tap(find.text('연결 설정 보기'));
+    await tester.pumpAndSettle();
     await tester.scrollUntilVisible(
       find.widgetWithText(FilledButton, 'Fenru 시작하기'),
       400,
@@ -133,6 +135,33 @@ void main() {
     final visiblePage = tester
         .getRect(find.byType(InkSurface).first)
         .intersect(tester.getRect(find.byType(PdfViewer)));
+    final beforeTouch = controller.value.clone();
+    await tester.dragFrom(visiblePage.center, const Offset(0, -55));
+    await tester.pumpAndSettle();
+    expect(controller.value, beforeTouch);
+    expect(w.ofKind('annotation'), isEmpty);
+
+    final left = await tester.startGesture(
+      visiblePage.center - const Offset(45, 0),
+    );
+    final right = await tester.startGesture(
+      visiblePage.center + const Offset(45, 0),
+    );
+    final zoomAtTouch = controller.currentZoom;
+    await left.moveBy(const Offset(-30, 0));
+    await right.moveBy(const Offset(30, 0));
+    expect(controller.currentZoom, greaterThan(zoomAtTouch));
+    await left.moveBy(const Offset(25, 0));
+    await right.moveBy(const Offset(-25, 0));
+    expect(controller.currentZoom, lessThan(zoomAtTouch * 1.4));
+    await right.up();
+    final afterPinch = controller.value.clone();
+    await left.moveBy(const Offset(0, -35));
+    await left.up();
+    await tester.pumpAndSettle();
+    expect(controller.value, afterPinch);
+    expect(w.ofKind('annotation'), isEmpty);
+
     final pen = await tester.startGesture(
       visiblePage.center - const Offset(40, 0),
       kind: ui.PointerDeviceKind.stylus,
