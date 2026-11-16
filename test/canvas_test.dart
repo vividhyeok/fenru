@@ -7,8 +7,91 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:fenru/integrations/canvas.dart';
 import 'package:fenru/core/database.dart';
 import 'package:fenru/core/workspace.dart';
+import 'package:fenru/features/ai/study_context.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  test('remembered sync courses migrate existing courses and stay isolated by school', () async {
+    final root = await Directory.systemTemp.createTemp('fenru-sync-selection-');
+    final w = Workspace(root, WorkspaceDatabase.memory());
+    await w.initialize();
+    try {
+      await w.save('course', {
+        'title': 'Biology',
+        'source': 'https://school.edu/courses/7',
+        'externalId': '7',
+      });
+      final selection = CanvasSyncSelection(w, Uri.parse('https://school.edu'));
+      expect(selection.read(), {'7'});
+      await selection.save([
+        {'id': 7},
+        {'id': 9},
+      ]);
+      expect(CanvasSyncSelection(w, Uri.parse('https://school.edu')).read(), {
+        '7',
+        '9',
+      });
+      expect(
+        CanvasSyncSelection(w, Uri.parse('https://other.edu')).read(),
+        isEmpty,
+      );
+    } finally {
+      await w.close();
+      await root.delete(recursive: true);
+    }
+  });
+  test(
+    'announcement bodies persist, deduplicate, update and join course evidence',
+    () async {
+      final root = await Directory.systemTemp.createTemp('fenru-content-');
+      final w = Workspace(root, WorkspaceDatabase.memory());
+      await w.initialize();
+      try {
+        final course = await w.save('course', {
+          'title': 'Biology',
+          'source': 'https://school.edu/courses/1',
+        });
+        final provider = CanvasProvider('https://school.edu', 'fake');
+        CanvasImportReport report(String body) => CanvasImportReport()
+          ..contents['topic:4'] = {
+            'title': '공지 · 기말시험',
+            'body': body,
+            'url': 'https://school.edu/courses/1/discussion_topics/4',
+            'posted': '2026-11-04',
+            'updated': '',
+            'contentType': '공지',
+          };
+        final first = report('시험 범위는 세포 호흡');
+        await provider.saveCourseContents(w, course, first);
+        expect(first.contentSaved, 1);
+        final same = report('시험 범위는 세포 호흡');
+        await provider.saveCourseContents(w, course, same);
+        expect(same.unchanged, 1);
+        expect(w.ofKind('document').length, 2);
+        await provider.saveCourseContents(w, course, report('시험 범위는 광합성'));
+        final docs = StudyContextService.courseDocuments(w, course);
+        expect(docs.length, 1);
+        expect(docs.single.text('extension'), '.pdf');
+        expect(docs.single.text('sourceUrl'), contains('discussion_topics/4'));
+        expect(
+          (await StudyContextService(w).pages(docs.single)).single,
+          contains('광합성'),
+        );
+        final source = File('${root.path}/lecture.txt');
+        await source.writeAsString('광합성은 빛 에너지를 화학 에너지로 전환한다.');
+        await w.importFile(source.path, folder: course.title);
+        final context = await StudyContextService(w).retrieve(
+          StudyContextService.courseDocuments(w, course),
+          '시험 나올 거 짚어 줘',
+        );
+        expect(context.excerpts.any((e) => e.title.startsWith('공지')), isTrue);
+        expect(context.excerpts.any((e) => e.title == 'lecture.txt'), isTrue);
+      } finally {
+        await w.close();
+        await root.delete(recursive: true);
+      }
+    },
+  );
   test('discovers page, module page, discussion reply, announcement and assignment attachments', () async {
     ResponseBody json(Object data) => ResponseBody.fromString(
       jsonEncode(data),
@@ -54,6 +137,8 @@ void main() {
               {
                 'id': 4,
                 'title': 'Notice',
+                'message': '<p>기말 시험 범위는 세포 호흡입니다.</p>',
+                'posted_at': '2026-11-04T01:00:00Z',
                 'attachments': [
                   {'url': '/courses/1/files/13/download', 'filename': 'D.pptx'},
                 ],
@@ -114,6 +199,8 @@ void main() {
     );
     expect(requested.every((host) => host == 'school.edu'), isTrue);
     expect(report.warnings, isEmpty);
+    expect(report.contents['topic:4']!['body'], contains('세포 호흡'));
+    expect(report.contents['topic:4']!['contentType'], '공지');
   });
   test('module download rejects a successful HTTP login page', () async {
     final root = await Directory.systemTemp.createTemp('fenru-login-test-');

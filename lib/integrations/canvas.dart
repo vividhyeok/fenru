@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:convert';
 
 import 'package:dio/dio.dart';
+import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
 import 'package:html/parser.dart' as html;
 
@@ -28,10 +29,44 @@ class CanvasRequestException extends UserFacingException {
 }
 
 class CanvasImportReport {
-  int imported = 0, unchanged = 0, assignments = 0, skipped = 0;
+  int imported = 0,
+      unchanged = 0,
+      assignments = 0,
+      skipped = 0,
+      contentSaved = 0;
+  final contents = <String, Json>{};
   final warnings = <String>[];
   String get summary =>
-      '파일 $imported개 저장 · 기존 $unchanged개 · 과제 $assignments개 · 건너뜀 $skipped개';
+      '파일 $imported개 저장 · 기존 $unchanged개 · 과제 $assignments개 · 공지/본문 $contentSaved개 · 건너뜀 $skipped개';
+}
+
+class CanvasSyncSelection {
+  CanvasSyncSelection(this.workspace, this.base);
+  final Workspace workspace;
+  final Uri base;
+  String get key => 'canvas.courseIds.${base.host}';
+  Set<String> read() {
+    if (workspace.preferences.containsKey(key)) {
+      try {
+        return (jsonDecode(workspace.preferences[key]!) as List)
+            .cast<String>()
+            .toSet();
+      } catch (_) {
+        return {};
+      }
+    }
+    return workspace
+        .ofKind('course')
+        .where((c) => c.text('source').startsWith('${base.origin}/courses/'))
+        .map((c) => c.text('externalId'))
+        .where((id) => id.isNotEmpty)
+        .toSet();
+  }
+
+  Future<void> save(Iterable<Json> courses) => workspace.setPreference(
+    key,
+    jsonEncode(courses.map((c) => '${c['id']}').toList()),
+  );
 }
 
 class CanvasProvider implements LmsProvider {
@@ -132,7 +167,7 @@ class CanvasProvider implements LmsProvider {
   @override
   Future<List<Json>> courses() async {
     final result = await collection(
-      '/api/v1/courses?enrollment_state=active&per_page=100',
+      '/api/v1/courses?enrollment_state=active&per_page=100&include[]=syllabus_body',
     );
     _authenticated = true;
     return result;
@@ -272,7 +307,21 @@ class CanvasProvider implements LmsProvider {
       'source': sourceKey,
       'externalId': courseId,
     }, id: existing?.id);
+    if (course['syllabus_body'] is String &&
+        (course['syllabus_body'] as String).trim().isNotEmpty) {
+      report.contents['syllabus'] = {
+        'title': '강의계획 · ${local.title}',
+        'body': html.parse(course['syllabus_body'] as String).body?.text ?? '',
+        'url': base
+            .resolve('/courses/$courseId/assignments/syllabus')
+            .toString(),
+        'posted': '',
+        'updated': '',
+        'contentType': '강의계획',
+      };
+    }
     final files = await discoverFiles(courseId, report, progress);
+    await saveCourseContents(workspace, local, report);
     for (final file in files) {
       final externalId = '${file['id']}', modified = '${file['updated_at']}';
       final previous = workspace.ofKind('document').where((d) {
@@ -336,12 +385,11 @@ class CanvasProvider implements LmsProvider {
             '$displayName: 원본 저장 완료, ${imported.text('conversionError')}',
           );
         }
-        if (previous.isNotEmpty) {
-          await workspace.save('document', {
-            ...imported.data,
-            'previousVersion': previous.first.id,
-          }, id: imported.id);
-        }
+        await workspace.save('document', {
+          ...imported.data,
+          'syncedAt': DateTime.now().toUtc().toIso8601String(),
+          if (previous.isNotEmpty) 'previousVersion': previous.first.id,
+        }, id: imported.id);
         report.imported++;
       } on DioException catch (e) {
         final error = await requestError(e, '파일 다운로드');
@@ -383,6 +431,76 @@ class CanvasProvider implements LmsProvider {
       report.assignments++;
     }
     return report;
+  }
+
+  Future<void> saveCourseContents(
+    Workspace workspace,
+    WorkspaceObject course,
+    CanvasImportReport report,
+  ) async {
+    for (final entry in report.contents.entries) {
+      final item = entry.value;
+      final body =
+          '${item['title']}\n게시: ${item['posted']}\n수정: ${item['updated']}\n원문: ${item['url']}\n\n${item['body']}';
+      final digest = sha256.convert(utf8.encode(body)).toString();
+      final externalId = 'content:${entry.key}';
+      final previous = workspace.ofKind('document').where((d) {
+        final origin = d.data['origin'];
+        return d.text('derivedFrom').isEmpty &&
+            origin is Map &&
+            origin['source'] == course.text('source') &&
+            origin['id'] == externalId;
+      }).firstOrNull;
+      if (previous?.text('hash') == digest) {
+        if (previous != null &&
+            workspace.byId(previous.text('pdfDocumentId'))?.deleted != false) {
+          await convertCourseContent(workspace, previous, report);
+        }
+        report.unchanged++;
+        continue;
+      }
+      final temporary = await Directory.systemTemp.createTemp('fenru-content-');
+      try {
+        final file = File(p.join(temporary.path, 'content.txt'));
+        await file.writeAsString(body);
+        final imported = await workspace.importFile(
+          file.path,
+          folder: course.title,
+          displayName: '${item['title']}.txt',
+          origin: {
+            'source': course.text('source'),
+            'id': externalId,
+            'updated': item['updated'],
+          },
+        );
+        final content = await workspace.save('document', {
+          ...imported.data,
+          'title': item['title'],
+          'contentType': item['contentType'],
+          'syncedAt': DateTime.now().toUtc().toIso8601String(),
+          'courseId': course.id,
+          'sourceUrl': item['url'],
+          'posted': item['posted'],
+          if (previous != null) 'previousVersion': previous.id,
+        }, id: imported.id);
+        await convertCourseContent(workspace, content, report);
+        report.contentSaved++;
+      } finally {
+        await temporary.delete(recursive: true);
+      }
+    }
+  }
+
+  Future<void> convertCourseContent(
+    Workspace workspace,
+    WorkspaceObject content,
+    CanvasImportReport report,
+  ) async {
+    try {
+      await PdfConversion(workspace).convert(content);
+    } on UserFacingException catch (error) {
+      report.warnings.add('${content.title}: ${error.message}');
+    }
   }
 
   Future<List<Json>> discoverFiles(
@@ -564,17 +682,36 @@ class CanvasProvider implements LmsProvider {
       };
     }
 
-    Future<void> content(dynamic value, String location) async {
+    Future<void> content(
+      dynamic value,
+      String location, [
+      String sourceId = '',
+    ]) async {
       if (value is List) {
         for (final item in value) {
-          await content(item, location);
+          await content(
+            item,
+            location,
+            '$sourceId/${item is Map ? item['id'] ?? '' : ''}',
+          );
         }
         return;
       }
       if (value is! Map) return;
+      final textParts = <String>[];
       for (final key in ['body', 'message', 'description']) {
         if (value[key] is! String) continue;
-        final doc = html.parse(value[key] as String);
+        final doc = html.parse(
+          (value[key] as String).replaceAll(
+            RegExp(
+              r'</(?:p|div|li|h[1-6]|tr)>|<br\s*/?>',
+              caseSensitive: false,
+            ),
+            '\n',
+          ),
+        );
+        final plain = doc.body?.text.trim() ?? '';
+        if (plain.isNotEmpty) textParts.add(plain);
         for (final element in doc.querySelectorAll(
           '[href], [data-api-endpoint], [src]',
         )) {
@@ -586,6 +723,16 @@ class CanvasProvider implements LmsProvider {
             await link(raw, element.text, location);
           }
         }
+      }
+      if (textParts.isNotEmpty && sourceId.isNotEmpty) {
+        report.contents[sourceId] = {
+          'title': location,
+          'body': textParts.join('\n\n'),
+          'url': value['html_url'] ?? '',
+          'posted': value['posted_at'] ?? value['created_at'] ?? '',
+          'updated': value['updated_at'] ?? '',
+          'contentType': location.split(' · ').first,
+        };
       }
       if (value['url'] is String) {
         await link(
@@ -602,7 +749,7 @@ class CanvasProvider implements LmsProvider {
         'entries',
       ]) {
         if (value[key] != null) {
-          await content(value[key], location);
+          await content(value[key], location, '$sourceId/$key');
         }
       }
     }
@@ -621,7 +768,7 @@ class CanvasProvider implements LmsProvider {
             : await object(
                 '/api/v1/courses/$courseId/pages/${Uri.encodeComponent(slug)}',
               );
-        await content(detail, '페이지 · ${detail['title'] ?? slug}');
+        await content(detail, '페이지 · ${detail['title'] ?? slug}', 'page:$slug');
       } on CanvasRequestException catch (e) {
         if (e.authenticationFailed) rethrow;
         report.warnings.add('페이지 $slug: 접근할 수 없습니다.');
@@ -642,7 +789,7 @@ class CanvasProvider implements LmsProvider {
       for (final topic in topics) {
         final location =
             '${announcements ? '공지' : '게시판'} · ${topic['title'] ?? ''}';
-        await content(topic, location);
+        await content(topic, location, 'topic:${topic['id']}');
         final id = '${topic['id']}';
         if (!announcements &&
             topic['user_can_see_posts'] != false &&
@@ -653,6 +800,7 @@ class CanvasProvider implements LmsProvider {
                 '/api/v1/courses/$courseId/discussion_topics/$id/view',
               ),
               location,
+              'topic:$id/replies',
             );
           } on CanvasRequestException catch (e) {
             if (e.authenticationFailed) rethrow;
@@ -665,7 +813,11 @@ class CanvasProvider implements LmsProvider {
       '/api/v1/courses/$courseId/assignments?per_page=100',
       '과제 첨부자료',
     )) {
-      await content(item, '과제 · ${item['name'] ?? ''}');
+      await content(
+        item,
+        '과제 · ${item['name'] ?? ''}',
+        'assignment:${item['id']}',
+      );
     }
   }
 

@@ -1,10 +1,14 @@
 import 'dart:async';
+import 'dart:io';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../core/models.dart';
 import '../core/workspace.dart';
+import '../features/notes/note_pdf.dart';
 import '../features/reader/reader.dart';
 
 class NoteEditor extends StatefulWidget {
@@ -28,9 +32,131 @@ class _NoteEditorState extends State<NoteEditor> with WidgetsBindingObserver {
   late final title = TextEditingController(text: widget.note.title);
   late final body = TextEditingController(text: widget.note.text('body'));
   Timer? timer;
-  bool dirty = false, preview = false, saving = false;
+  late bool preview = body.text.trim().isNotEmpty;
+  bool dirty = false, saving = false, exporting = false;
   String status = '저장됨';
   Future<void> pending = Future.value();
+
+  String get displayTitle =>
+      title.text.trim().isEmpty ? '제목 없는 노트' : title.text.trim();
+
+  Future<void> makePdf({required bool addToLibrary}) async {
+    if (exporting) return;
+    setState(() => exporting = true);
+    final name = displayTitle;
+    final markdown = body.text;
+    final safeName = name
+        .replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1f]'), '_')
+        .replaceAll(RegExp(r'[ .]+$'), '');
+    final fileName = '${safeName.isEmpty ? 'Fenru note' : safeName}.pdf';
+    try {
+      await save();
+      if (!mounted || dirty || saving) return;
+      final bytes = await renderNotePdf(name, markdown);
+      if (!mounted) return;
+      if (addToLibrary) {
+        final temporary = await Directory.systemTemp.createTemp('fenru-note-');
+        try {
+          final file = await File('${temporary.path}/note.pdf')
+              .writeAsBytes(bytes);
+          final document = await widget.workspace.importFile(
+            file.path,
+            displayName: fileName,
+          );
+          if (mounted) await openSource(document.id);
+        } finally {
+          await temporary.delete(recursive: true);
+        }
+      } else {
+        final result = await FilePicker.saveFile(
+          dialogTitle: '노트를 PDF로 저장',
+          fileName: fileName,
+          type: FileType.custom,
+          allowedExtensions: ['pdf'],
+          bytes: bytes,
+          mimeType: 'application/pdf',
+        );
+        if (result != null && mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(const SnackBar(content: Text('PDF를 저장했습니다.')));
+        }
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('PDF를 만들거나 저장하지 못했습니다.')));
+      }
+    } finally {
+      if (mounted) setState(() => exporting = false);
+    }
+  }
+
+  Widget readingView() {
+    final theme = Theme.of(context);
+    final base = MarkdownStyleSheet.fromTheme(theme);
+    return SelectionArea(
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(20, 24, 20, 36),
+        children: [
+          Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 700),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    displayTitle,
+                    style: theme.textTheme.headlineSmall?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  const Divider(),
+                  const SizedBox(height: 16),
+                  MarkdownBody(
+                    data: body.text,
+                    styleSheet: base.copyWith(
+                      p: theme.textTheme.bodyLarge?.copyWith(
+                        fontSize: 16,
+                        height: 1.65,
+                      ),
+                      h1: theme.textTheme.headlineSmall?.copyWith(
+                        fontWeight: FontWeight.w700,
+                        height: 1.25,
+                      ),
+                      h2: theme.textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w700,
+                        height: 1.3,
+                      ),
+                      h3: theme.textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w700,
+                        height: 1.35,
+                      ),
+                      blockSpacing: 14,
+                      listIndent: 22,
+                      tableCellsPadding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 8,
+                      ),
+                    ),
+                    onTapLink: (_, href, _) {
+                      final uri = Uri.tryParse(href ?? '');
+                      if (uri != null &&
+                          (uri.scheme == 'https' || uri.scheme == 'http')) {
+                        launchUrl(uri, mode: LaunchMode.externalApplication);
+                      }
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> openSource(String id, [int? page]) async {
     await save();
     if (!mounted || dirty || saving) return;
@@ -151,17 +277,33 @@ class _NoteEditorState extends State<NoteEditor> with WidgetsBindingObserver {
               ),
               onPressed: widget.onToggleExpanded,
             ),
-          TextButton(onPressed: save, child: Text(status)),
+          if (!preview || dirty || saving)
+            TextButton(onPressed: save, child: Text(status)),
           IconButton(
-            tooltip: preview ? '편집' : '미리보기',
-            onPressed: () => setState(() => preview = !preview),
+            tooltip: preview ? '편집' : '읽기',
+            onPressed: () {
+              FocusScope.of(context).unfocus();
+              setState(() => preview = !preview);
+              if (preview && dirty) save();
+            },
             icon: Icon(preview ? Icons.edit_outlined : Icons.preview_outlined),
+          ),
+          PopupMenuButton<bool>(
+            tooltip: '노트 PDF',
+            enabled: !exporting && body.text.trim().isNotEmpty,
+            icon: const Icon(Icons.picture_as_pdf_outlined),
+            onSelected: (value) => makePdf(addToLibrary: value),
+            itemBuilder: (_) => const [
+              PopupMenuItem(value: true, child: Text('PDF로 만들어 필기하기')),
+              PopupMenuItem(value: false, child: Text('PDF 파일로 저장')),
+            ],
           ),
         ],
       ),
       body: Column(
         children: [
-          if (!widget.embedded)
+          if (exporting) const LinearProgressIndicator(),
+          if (!preview)
             Padding(
               padding: const EdgeInsets.all(16),
               child: TextField(
@@ -215,7 +357,7 @@ class _NoteEditorState extends State<NoteEditor> with WidgetsBindingObserver {
             ),
           Expanded(
             child: preview
-                ? Markdown(data: body.text, selectable: true)
+                ? readingView()
                 : Padding(
                     padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
                     child: TextField(

@@ -1,29 +1,62 @@
 import 'package:flutter/material.dart';
 
 abstract final class FenruTheme {
-  static const navy = Color(0xff234b80);
+  static const navy = Color(0xff28655c);
   static const gap = 16.0;
   static const desktop = 1050.0;
   static const tablet = 700.0;
   static ThemeData build(Brightness brightness) {
     final dark = brightness == Brightness.dark;
-    final scheme = ColorScheme.fromSeed(
-      seedColor: navy,
-      brightness: brightness,
-    );
+    final scheme = ColorScheme.fromSeed(seedColor: navy, brightness: brightness)
+        .copyWith(
+          primary: dark ? const Color(0xff9bd3bf) : const Color(0xff28655c),
+          surface: dark ? const Color(0xff191d1b) : const Color(0xfffaf9f5),
+          surfaceContainerLow: dark
+              ? const Color(0xff202622)
+              : const Color(0xfff0f0e9),
+          surfaceContainerHighest: dark
+              ? const Color(0xff303831)
+              : const Color(0xffe8ebe3),
+          outlineVariant: dark
+              ? const Color(0xff424b43)
+              : const Color(0xffd8ddd4),
+        );
     return ThemeData(
       useMaterial3: true,
       brightness: brightness,
       colorScheme: scheme,
       scaffoldBackgroundColor: dark
-          ? const Color(0xff111820)
-          : const Color(0xfff6f7f9),
+          ? const Color(0xff171c19)
+          : const Color(0xfff7f7f2),
       appBarTheme: AppBarTheme(
         backgroundColor: dark
-            ? const Color(0xff111820)
-            : const Color(0xfff6f7f9),
+            ? const Color(0xff171c19)
+            : const Color(0xfff7f7f2),
         scrolledUnderElevation: 0,
         centerTitle: false,
+      ),
+      filledButtonTheme: FilledButtonThemeData(
+        style: FilledButton.styleFrom(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+        ),
+      ),
+      outlinedButtonTheme: OutlinedButtonThemeData(
+        style: OutlinedButton.styleFrom(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+        ),
+      ),
+      chipTheme: ChipThemeData(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+        side: BorderSide(color: scheme.outlineVariant),
+      ),
+      navigationBarTheme: NavigationBarThemeData(
+        height: 64,
+        indicatorShape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(8),
+        ),
+        indicatorColor: scheme.primary.withValues(alpha: .12),
       ),
       inputDecorationTheme: const InputDecorationTheme(
         border: OutlineInputBorder(),
@@ -41,8 +74,13 @@ abstract final class FenruTheme {
         color: scheme.outlineVariant,
         thickness: 1,
       ),
-      navigationRailTheme: const NavigationRailThemeData(
+      navigationRailTheme: NavigationRailThemeData(
         labelType: NavigationRailLabelType.all,
+        backgroundColor: scheme.surface,
+        indicatorColor: scheme.primary.withValues(alpha: .12),
+        indicatorShape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(8),
+        ),
       ),
       visualDensity: VisualDensity.standard,
     );

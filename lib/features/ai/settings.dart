@@ -6,14 +6,18 @@ import '../../integrations/ai.dart';
 import '../../integrations/credentials.dart';
 
 class AISettings extends StatefulWidget {
-  const AISettings({super.key, required this.workspace});
+  const AISettings({super.key, required this.workspace, this.embedded = false});
   final Workspace workspace;
+  final bool embedded;
   @override
-  State<AISettings> createState() => _AISettingsState();
+  State<AISettings> createState() => AISettingsState();
 }
 
-class _AISettingsState extends State<AISettings> {
-  AIService service = AIService.openai;
+class AISettingsState extends State<AISettings> {
+  late AIService service =
+      widget.workspace.preferences['ai.provider'] == 'deepseek'
+      ? AIService.deepseek
+      : AIService.openai;
   final keyField = TextEditingController();
   final model = TextEditingController();
   final output = TextEditingController();
@@ -72,6 +76,16 @@ class _AISettingsState extends State<AISettings> {
       });
     }
   });
+  bool get needsSave =>
+      keyField.text.trim().isNotEmpty || model.text.trim().isNotEmpty;
+  bool saved = false;
+  Future<bool> saveForStart() async {
+    if (keyField.text.trim().isEmpty && model.text.trim().isEmpty) return true;
+    saved = false;
+    await save();
+    return saved;
+  }
+
   Future<void> save() => act(() async {
     final maxOutput = int.tryParse(output.text),
         limit = int.tryParse(budget.text);
@@ -95,6 +109,7 @@ class _AISettingsState extends State<AISettings> {
     await widget.workspace.setPreference('ai.output', '$maxOutput');
     await widget.workspace.setPreference('ai.dailyBudget', '$limit');
     keyField.clear();
+    saved = true;
     if (mounted) setState(() => status = '저장되었습니다. 키는 기기의 보안 저장소에만 보관합니다.');
   });
   @override
@@ -107,9 +122,10 @@ class _AISettingsState extends State<AISettings> {
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: const Text('AI 연결 및 사용 한도')),
-    body: ListView(
+  Widget build(BuildContext context) {
+    final content = ListView(
+      shrinkWrap: widget.embedded,
+      physics: widget.embedded ? const NeverScrollableScrollPhysics() : null,
       padding: const EdgeInsets.all(24),
       children: [
         const Text(
@@ -170,26 +186,55 @@ class _AISettingsState extends State<AISettings> {
           decoration: const InputDecoration(labelText: '모델 ID (직접 입력 가능)'),
         ),
         const SizedBox(height: 16),
-        TextField(
-          controller: output,
-          keyboardType: TextInputType.number,
-          decoration: const InputDecoration(
-            labelText: '요청당 최대 출력 토큰 (256~8192)',
+        if (widget.embedded)
+          ExpansionTile(
+            tilePadding: EdgeInsets.zero,
+            title: const Text('사용 한도 · 고급 설정'),
+            children: [
+              TextField(
+                controller: output,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: '요청당 최대 출력 토큰 (256~8192)',
+                ),
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: budget,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: '일별 기록 토큰 상한 (금액 예산이 아님)',
+                ),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                '실제 제공자가 보고한 입력/출력 토큰만 기록합니다. 취소·연결 실패 시 사용량이 누락될 수 있으며, API 청구는 제공자 대시보드가 기준입니다. 금액은 임의로 추정하지 않습니다.',
+              ),
+              const SizedBox(height: 16),
+            ],
+          )
+        else ...[
+          TextField(
+            controller: output,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+              labelText: '요청당 최대 출력 토큰 (256~8192)',
+            ),
           ),
-        ),
-        const SizedBox(height: 16),
-        TextField(
-          controller: budget,
-          keyboardType: TextInputType.number,
-          decoration: const InputDecoration(
-            labelText: '일별 기록 토큰 상한 (금액 예산이 아님)',
+          const SizedBox(height: 16),
+          TextField(
+            controller: budget,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+              labelText: '일별 기록 토큰 상한 (금액 예산이 아님)',
+            ),
           ),
-        ),
-        const SizedBox(height: 16),
-        const Text(
-          '실제 제공자가 보고한 입력/출력 토큰만 기록합니다. 취소·연결 실패 시 사용량이 누락될 수 있으며, API 청구는 제공자 대시보드가 기준입니다. 금액은 임의로 추정하지 않습니다.',
-        ),
-        const SizedBox(height: 16),
+          const SizedBox(height: 16),
+          const Text(
+            '실제 제공자가 보고한 입력/출력 토큰만 기록합니다. 취소·연결 실패 시 사용량이 누락될 수 있으며, API 청구는 제공자 대시보드가 기준입니다. 금액은 임의로 추정하지 않습니다.',
+          ),
+          const SizedBox(height: 16),
+        ],
         if (busy) const LinearProgressIndicator(),
         if (status.isNotEmpty)
           Padding(
@@ -221,6 +266,12 @@ class _AISettingsState extends State<AISettings> {
           ],
         ),
       ],
-    ),
-  );
+    );
+    return widget.embedded
+        ? content
+        : Scaffold(
+            appBar: AppBar(title: const Text('AI 연결 및 사용 한도')),
+            body: content,
+          );
+  }
 }

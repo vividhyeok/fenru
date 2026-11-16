@@ -2,10 +2,8 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
-import 'package:go_router/go_router.dart';
 
 import 'core/database.dart';
 import 'core/models.dart';
@@ -14,9 +12,6 @@ import 'ui/theme.dart';
 import 'ui/onboarding.dart';
 import 'ui/shell.dart';
 
-final workspaceProvider = Provider<Workspace>(
-  (ref) => throw StateError('Workspace not initialized'),
-);
 Future<void> main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
   RandomAccessFile? guard;
@@ -43,12 +38,7 @@ Future<void> main(List<String> args) async {
       guard: guard,
     );
     await workspace.initialize();
-    runApp(
-      ProviderScope(
-        overrides: [workspaceProvider.overrideWithValue(workspace)],
-        child: FenruApp(workspace: workspace),
-      ),
-    );
+    runApp(FenruApp(workspace: workspace));
   } catch (error) {
     await guard?.close();
     runApp(
@@ -77,30 +67,10 @@ class FenruApp extends StatefulWidget {
 }
 
 class _FenruAppState extends State<FenruApp> {
-  late final GoRouter router = GoRouter(
-    routes: [
-      GoRoute(
-        path: '/',
-        builder: (_, _) => ListenableBuilder(
-          listenable: widget.workspace,
-          builder: (_, _) =>
-              widget.workspace.preferences['onboarding'] == 'complete'
-              ? FenruShell(workspace: widget.workspace)
-              : Onboarding(workspace: widget.workspace),
-        ),
-      ),
-    ],
-  );
-  @override
-  void dispose() {
-    router.dispose();
-    super.dispose();
-  }
-
   @override
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: widget.workspace,
-    builder: (_, _) => MaterialApp.router(
+    builder: (_, _) => MaterialApp(
       title: 'Fenru',
       debugShowCheckedModeBanner: false,
       theme: FenruTheme.build(Brightness.light),
@@ -113,7 +83,9 @@ class _FenruAppState extends State<FenruApp> {
       locale: Locale(widget.workspace.preferences['language'] ?? 'ko'),
       supportedLocales: const [Locale('ko'), Locale('en')],
       localizationsDelegates: GlobalMaterialLocalizations.delegates,
-      routerConfig: router,
+      home: widget.workspace.preferences['onboarding'] == 'complete'
+          ? FenruShell(workspace: widget.workspace)
+          : Onboarding(workspace: widget.workspace),
     ),
   );
 }

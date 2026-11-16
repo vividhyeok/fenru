@@ -12,6 +12,8 @@ import '../core/workspace.dart';
 import '../integrations/pdf_conversion.dart';
 import '../features/backup/backup_service.dart';
 import '../features/reader/reader.dart';
+import '../features/reader/reading_tools.dart';
+import '../features/reader/reader_settings.dart';
 import '../features/ai/chat.dart';
 import '../features/ai/course_workspace.dart';
 import '../features/ai/study_context.dart';
@@ -21,6 +23,7 @@ import '../integrations/credentials.dart';
 import 'dialogs.dart';
 import 'note_editor.dart';
 import 'theme.dart';
+import 'onboarding.dart';
 
 class FenruShell extends StatefulWidget {
   const FenruShell({super.key, required this.workspace});
@@ -339,7 +342,9 @@ class _FenruShellState extends State<FenruShell> {
                           : o.text('pdfDocumentId').isNotEmpty
                           ? 'PDF로 열기 · 원본 보관됨'
                           : o.text('derivedFrom').isNotEmpty
-                          ? '원본에서 변환한 PDF'
+                          ? o.flag('conversionTextOnly')
+                                ? '본문 추출 PDF · 원본 보관됨'
+                                : '원본에서 변환한 PDF'
                           : o.text('tags')}'
                     : o.text('body').replaceAll('\n', ' '),
                 maxLines: 1,
@@ -418,13 +423,69 @@ class _FenruShellState extends State<FenruShell> {
           ..sort((a, b) => b.text('lastRead').compareTo(a.text('lastRead')));
     final tasks = w.ofKind('task').where((o) => !o.flag('done')).toList()
       ..sort((a, b) => a.text('due').compareTo(b.text('due')));
+    final anchor = w.ofKind('studyAnchor').where((item) {
+      final doc = w.byId(item.text('documentId'));
+      return !item.flag('resolved') && doc != null && !doc.deleted;
+    }).firstOrNull;
+    final anchorDocument = w.byId(anchor?.text('documentId'));
     return ListView(
       padding: const EdgeInsets.all(28),
       children: [
+        if (anchor != null && anchorDocument != null || recent.isNotEmpty) ...[
+          Text('이어서 공부하기', style: Theme.of(context).textTheme.titleLarge),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.auto_stories_outlined),
+              title: Text(anchorDocument?.title ?? recent.first.title),
+              subtitle: Text(
+                anchor == null
+                    ? '${recent.first.number('page', 1)}쪽에서 계속'
+                    : '${anchor.number('page', 1)}쪽 · ${anchor.text('body').isEmpty ? anchor.text('selection') : anchor.text('body')}',
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () {
+                if (anchor == null || anchorDocument == null) {
+                  openObject(recent.first);
+                  return;
+                }
+                Navigator.push(
+                  context,
+                  MaterialPageRoute<void>(
+                    builder: (_) => DocumentReader(
+                      workspace: w,
+                      document: anchorDocument,
+                      initialPage:
+                          anchor.text('versionHash') ==
+                              anchorDocument.text('hash')
+                          ? anchor.number('page', 1)
+                          : null,
+                      studyAnchor: anchor,
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+          const SizedBox(height: 24),
+        ],
         Text('오늘도, 한 걸음 더.', style: Theme.of(context).textTheme.headlineMedium),
         const SizedBox(height: 8),
         const Text('자료를 읽고 생각을 기록하는 나만의 학습 공간'),
         const SizedBox(height: 24),
+        if ((w.preferences['ai.provider'] ?? '').isEmpty ||
+            (w.preferences['canvasUrl'] ?? '').isEmpty)
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.tune),
+            title: const Text('학교 · AI 빠른 연결'),
+            subtitle: const Text('한 화면에서 연결을 설정하고 바로 시작하세요.'),
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute<void>(builder: (_) => Onboarding(workspace: w)),
+            ),
+          ),
         Wrap(
           spacing: 12,
           runSpacing: 12,
@@ -457,20 +518,6 @@ class _FenruShellState extends State<FenruShell> {
           ],
         ),
         const SizedBox(height: 30),
-        Text('이어서 읽기', style: Theme.of(context).textTheme.titleLarge),
-        if (recent.isEmpty)
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 18),
-            child: Text('문서를 열면 마지막으로 읽던 자료가 여기에 표시됩니다.'),
-          ),
-        for (final doc in recent.take(5))
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.auto_stories_outlined),
-            title: Text(doc.title),
-            subtitle: Text('${doc.number('page', 1)}페이지에서 계속'),
-            onTap: () => openObject(doc),
-          ),
         const Divider(height: 40),
         Text('다가오는 할 일', style: Theme.of(context).textTheme.titleLarge),
         if (tasks.isEmpty)
@@ -497,7 +544,11 @@ class _FenruShellState extends State<FenruShell> {
         ? w.objects.where((o) => o.deleted).toList()
         : w
               .ofKind('document')
-              .where((d) => folder.isEmpty || d.text('folder') == folder)
+              .where(
+                (d) =>
+                    (folder.isEmpty || d.text('folder') == folder) &&
+                    w.byId(d.text('pdfDocumentId'))?.deleted != false,
+              )
               .toList();
     final folders =
         w
@@ -696,7 +747,7 @@ class _FenruShellState extends State<FenruShell> {
     }, label: 'Canvas 연결을 확인하고 있습니다…');
   }
 
-  Future<void> syncCanvas() => run(() async {
+  Future<void> syncCanvas({bool chooseCourses = false}) => run(() async {
     final token = await SecureCredentials().read('canvas');
     if (token == null) {
       throw const UserFacingException('설정에서 Canvas를 먼저 연결하세요.');
@@ -704,57 +755,79 @@ class _FenruShellState extends State<FenruShell> {
     final provider = CanvasProvider(w.preferences['canvasUrl'] ?? '', token);
     final courses = await provider.courses();
     if (!mounted) return;
-    final courseSelection = <int>{};
-    final chosen = await showDialog<List<Json>>(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, update) => AlertDialog(
-          title: const Text('가져올 과목 선택'),
-          content: SizedBox(
-            width: 500,
-            height: 350,
-            child: courses.isEmpty
-                ? const Text('수강 중인 과목이 없습니다.')
-                : ListView.builder(
-                    itemCount: courses.length,
-                    itemBuilder: (_, i) => CheckboxListTile(
-                      value: courseSelection.contains(i),
-                      title: Text('${courses[i]['name'] ?? courses[i]['id']}'),
-                      onChanged: (value) => update(() {
-                        value == true
-                            ? courseSelection.add(i)
-                            : courseSelection.remove(i);
-                      }),
+    final selection = CanvasSyncSelection(w, provider.base);
+    final remembered = selection.read();
+    final courseSelection = <int>{
+      for (var i = 0; i < courses.length; i++)
+        if (remembered.contains('${courses[i]['id']}')) i,
+    };
+    final List<Json>? chosen;
+    if (!chooseCourses && remembered.isNotEmpty) {
+      chosen = courses.where((c) => remembered.contains('${c['id']}')).toList();
+      if (chosen.isEmpty) {
+        throw const UserFacingException(
+          '저장한 과목이 현재 수강 목록에 없습니다. 동기화 과목 변경에서 다시 선택하세요.',
+        );
+      }
+    } else {
+      chosen = await showDialog<List<Json>>(
+        context: context,
+        builder: (context) => StatefulBuilder(
+          builder: (context, update) => AlertDialog(
+            title: const Text('가져올 과목 선택'),
+            content: SizedBox(
+              width: 500,
+              height: 350,
+              child: courses.isEmpty
+                  ? const Text('수강 중인 과목이 없습니다.')
+                  : ListView.builder(
+                      itemCount: courses.length,
+                      itemBuilder: (_, i) => CheckboxListTile(
+                        value: courseSelection.contains(i),
+                        title: Text(
+                          '${courses[i]['name'] ?? courses[i]['id']}',
+                        ),
+                        onChanged: (value) => update(() {
+                          value == true
+                              ? courseSelection.add(i)
+                              : courseSelection.remove(i);
+                        }),
+                      ),
                     ),
-                  ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('취소'),
+              ),
+              FilledButton(
+                onPressed: courseSelection.isEmpty
+                    ? null
+                    : () => Navigator.pop(
+                        context,
+                        courseSelection.map((i) => courses[i]).toList(),
+                      ),
+                child: const Text('가져오기'),
+              ),
+            ],
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('취소'),
-            ),
-            FilledButton(
-              onPressed: courseSelection.isEmpty
-                  ? null
-                  : () => Navigator.pop(
-                      context,
-                      courseSelection.map((i) => courses[i]).toList(),
-                    ),
-              child: const Text('가져오기'),
-            ),
-          ],
         ),
-      ),
-    );
+      );
+    }
     if (chosen == null) return;
+    await selection.save(chosen);
     final summaries = <String>[];
+    var hasWarnings = false;
     for (final course in chosen) {
       final report = await provider.importCourse(w, course, (message) {
         if (mounted) setState(() => status = message);
       });
       summaries.add('${course['name'] ?? course['id']}\n${report.summary}');
       summaries.addAll(report.warnings);
-      if (report.imported == 0 && report.unchanged == 0) {
+      hasWarnings = hasWarnings || report.warnings.isNotEmpty;
+      if (report.imported == 0 &&
+          report.unchanged == 0 &&
+          report.contentSaved == 0) {
         summaries.add(
           '내려받을 문서 파일이 발견되지 않았습니다. 영상·퀴즈·설문은 다운로드하지 않습니다. 아래 경고와 학교 강의실의 원본 문서 다운로드 제공 여부를 확인하세요.',
         );
@@ -762,7 +835,7 @@ class _FenruShellState extends State<FenruShell> {
     }
     await w.setPreference('canvasLastSync', DateTime.now().toIso8601String());
     await w.setPreference('canvasImportSummary', summaries.join('\n\n'));
-    if (mounted) {
+    if (mounted && hasWarnings) {
       await showDialog<void>(
         context: context,
         builder: (context) => AlertDialog(
@@ -798,10 +871,20 @@ class _FenruShellState extends State<FenruShell> {
           child: FilledButton.icon(
             onPressed: busy ? null : syncCanvas,
             icon: const Icon(Icons.sync),
-            label: const Text('Canvas 자료 가져오기'),
+            label: const Text('선택 과목 동기화'),
           ),
         ),
         const SizedBox(height: 16),
+        TextButton.icon(
+          onPressed: busy ? null : () => syncCanvas(chooseCourses: true),
+          icon: const Icon(Icons.checklist),
+          label: const Text('동기화 과목 변경'),
+        ),
+        if ((w.preferences['canvasImportSummary'] ?? '').isNotEmpty)
+          ExpansionTile(
+            title: const Text('최근 동기화 결과'),
+            children: [SelectableText(w.preferences['canvasImportSummary']!)],
+          ),
         if (items.isEmpty)
           const Text('설정에서 학교 Canvas 주소와 토큰을 연결하거나 라이브러리에서 폴더를 지정하세요.'),
         for (final item in items)
@@ -809,7 +892,7 @@ class _FenruShellState extends State<FenruShell> {
             title: Text(item.title),
             leading: const Icon(Icons.school_outlined),
             subtitle: Text(
-              '${StudyContextService.courseDocuments(w, item).length}개 자료',
+              '${StudyContextService.courseDocuments(w, item).length}개 자료 · 새 자료 ${StudyContextService.courseDocuments(w, item).where((d) => isNewSynced(w, d)).length}개',
             ),
             onTap: () => openObject(item),
             trailing: IconButton(
@@ -907,6 +990,16 @@ class _FenruShellState extends State<FenruShell> {
     children: [
       Text('나만의 학습 환경', style: Theme.of(context).textTheme.headlineSmall),
       const SizedBox(height: 20),
+      ListTile(
+        contentPadding: EdgeInsets.zero,
+        leading: const Icon(Icons.draw_outlined),
+        title: const Text('읽기 · 필기 설정'),
+        subtitle: const Text('손가락 입력 · 읽기 배경'),
+        onTap: () => Navigator.push(
+          context,
+          MaterialPageRoute<void>(builder: (_) => ReaderSettings(workspace: w)),
+        ),
+      ),
       const Text('화면', style: TextStyle(fontWeight: FontWeight.w600)),
       SegmentedButton<String>(
         segments: const [

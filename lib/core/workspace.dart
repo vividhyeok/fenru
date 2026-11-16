@@ -159,7 +159,11 @@ class Workspace extends ChangeNotifier {
     final size = await file.length();
     final digest = (await sha256.bind(file.openRead()).first).toString();
     for (final existing in ofKind('document')) {
-      if (existing.text('hash') == digest && origin == null) return existing;
+      if (existing.text('hash') == digest &&
+          origin == null &&
+          existing.text('folder') == (folder ?? '')) {
+        return existing;
+      }
     }
     final id = uuid.v4();
     final name = p.basename(displayName ?? source);

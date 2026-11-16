@@ -63,6 +63,9 @@ class StudyContextService {
     WorkspaceObject course,
   ) {
     final docs = workspace.ofKind('document').where((doc) {
+      if (doc.text('courseId').isNotEmpty) {
+        return doc.text('courseId') == course.id;
+      }
       final origin = doc.data['origin'];
       if (origin is Map &&
           origin['source'] is String &&
@@ -75,10 +78,16 @@ class StudyContextService {
         .map((d) => d.text('previousVersion'))
         .where((id) => id.isNotEmpty)
         .toSet();
+    final previousPdfs = docs
+        .where((d) => previous.contains(d.id))
+        .map((d) => d.text('pdfDocumentId'))
+        .where((id) => id.isNotEmpty)
+        .toSet();
     return docs
         .where(
           (d) =>
               !previous.contains(d.id) &&
+              !previousPdfs.contains(d.id) &&
               !(workspace.byId(d.text('pdfDocumentId'))?.deleted == false),
         )
         .toList();
@@ -161,10 +170,63 @@ class StudyContextService {
     return result;
   }
 
+  Future<StudyContext> readScope(
+    WorkspaceObject document,
+    String mode, {
+    int page = 1,
+    String range = '',
+  }) async {
+    final pages = await this.pages(document);
+    final selectedPages = <int>{};
+    if (mode == 'current') {
+      if (page < 1 || page > pages.length) {
+        throw const UserFacingException('현재 페이지를 읽을 수 없습니다.');
+      }
+      selectedPages.add(page);
+    } else if (mode == 'range') {
+      for (final part in range.split(',')) {
+        final match = RegExp(r'^\s*(\d+)\s*(?:-\s*(\d+))?\s*$')
+            .firstMatch(part);
+        if (match == null) {
+          throw const UserFacingException('페이지 범위를 1-5, 8 형태로 입력하세요.');
+        }
+        final start = int.parse(match[1]!);
+        final end = int.parse(match[2] ?? match[1]!);
+        if (start < 1 || end < start || end > pages.length) {
+          throw const UserFacingException('문서 안의 올바른 페이지 범위를 입력하세요.');
+        }
+        for (var i = start; i <= end; i++) {
+          selectedPages.add(i);
+        }
+      }
+    } else {
+      selectedPages.addAll(List.generate(pages.length, (i) => i + 1));
+    }
+    final ordered = selectedPages.toList()..sort();
+    return StudyContext(
+      [
+        for (final number in ordered)
+          if (pages[number - 1].trim().isNotEmpty)
+            DocumentContext(
+              documentId: document.id,
+              title: document.title,
+              page: number,
+              text: pages[number - 1],
+              versionHash: document.text('hash'),
+            ),
+      ],
+      notices: [
+        if (ordered.any((n) => pages[n - 1].trim().isEmpty))
+          '일부 페이지에 추출 가능한 텍스트가 없습니다. 이미지/스캔 페이지는 OCR이 필요합니다.',
+      ],
+    );
+  }
+
   Future<StudyContext> retrieve(
     List<WorkspaceObject> documents,
-    String question,
-  ) async {
+    String question, {
+    int limit = 6,
+  }) async {
     final candidates = <DocumentContext>[];
     final notices = <String>[];
     final seen = <String>{};
@@ -209,14 +271,44 @@ class StudyContextService {
         );
       }
     }
-    final excerpts = rank(candidates, question);
+    final examQuestion = RegExp(
+      r'시험|중간고사|기말고사|출제|exam|midterm|final',
+      caseSensitive: false,
+    ).hasMatch(question);
+    final examDocs = documents
+        .where((d) => d.text('contentType').isNotEmpty)
+        .map((d) => d.id)
+        .toSet();
+    final examNotices = candidates
+        .where(
+          (e) =>
+              examDocs.contains(e.documentId) &&
+              RegExp(
+                r'시험|중간|기말|범위|출제|exam|midterm|final',
+                caseSensitive: false,
+              ).hasMatch(e.text),
+        )
+        .toList();
+    if (examQuestion && examNotices.isNotEmpty) {
+      final evidence = rank(examNotices, question).take(2).toList();
+      final lectures = candidates
+          .where((e) => !examDocs.contains(e.documentId))
+          .toList();
+      final related = rank(
+        lectures,
+        '$question ${evidence.map((e) => e.text).join(' ')}',
+      ).take(4);
+      return StudyContext([...evidence, ...related], notices: notices);
+    }
+    final excerpts = rank(candidates, question, limit: limit);
     return StudyContext(excerpts, notices: notices);
   }
 
   static List<DocumentContext> rank(
     List<DocumentContext> candidates,
-    String question,
-  ) {
+    String question, {
+    int limit = 6,
+  }) {
     final words = RegExp(r'[a-zA-Z0-9가-힣]{2,}')
         .allMatches(question.toLowerCase())
         .map((m) => m.group(0)!)
@@ -289,7 +381,7 @@ class StudyContextService {
     if (score(ranked.first.$2) > 0) {
       return ranked
           .where((e) => score(e.$2) > 0)
-          .take(6)
+          .take(limit)
           .map((e) => e.$2)
           .toList();
     }
@@ -300,10 +392,10 @@ class StudyContextService {
       grouped.putIfAbsent(item.documentId, () => []).add(item);
     }
     final result = <DocumentContext>[];
-    for (var turn = 0; turn < 6 && result.length < 6; turn++) {
+    for (var turn = 0; turn < limit && result.length < limit; turn++) {
       for (final group in grouped.values) {
-        if (result.length == 6) break;
-        final index = (turn * group.length / 6).floor();
+        if (result.length == limit) break;
+        final index = (turn * group.length / limit).floor();
         final chosen = group[index];
         if (!result.contains(chosen)) result.add(chosen);
       }

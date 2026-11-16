@@ -11,8 +11,12 @@ import '../../core/models.dart';
 import '../../core/workspace.dart';
 import '../../ui/dialogs.dart';
 import '../ai/chat.dart';
+import '../ai/study_context.dart';
 import '../../ui/note_editor.dart';
 import 'ink.dart';
+import 'reading_tools.dart';
+import 'reader_toolbar.dart';
+import 'reader_settings.dart';
 import '../../integrations/pdf_conversion.dart';
 
 class DocumentReader extends StatefulWidget {
@@ -20,9 +24,13 @@ class DocumentReader extends StatefulWidget {
     super.key,
     required this.workspace,
     required this.document,
+    this.initialPage,
+    this.studyAnchor,
   });
   final Workspace workspace;
   final WorkspaceObject document;
+  final int? initialPage;
+  final WorkspaceObject? studyAnchor;
   @override
   State<DocumentReader> createState() => _DocumentReaderState();
 }
@@ -46,14 +54,113 @@ class _DocumentReaderState extends State<DocumentReader> {
   }
 
   final controller = PdfViewerController();
-  late int page = document.number('page', 1);
+  late int page = widget.initialPage ?? document.number('page', 1);
   Timer? pageTimer;
   bool panel = false;
-  bool showAI = true, useCurrentPage = false, searchOpen = false;
+  late final savedView = ReaderViewSettings.read(widget.workspace, document.id);
+  late bool showAI = savedView.showAI;
+  bool useCurrentPage = false, searchOpen = false;
+  late String fitMode = savedView.fit;
+  bool restoredView = false;
+  double? interactionZoom;
+  final returnLocations =
+      <({Offset center, double zoom, int page, String fit})>[];
+  late List<PenPreset> presets = PenPreset.read(widget.workspace);
   bool questionFocus = false;
-  String inkTool = 'read';
-  double penWidth = 2;
-  int penColor = 0xff234b80;
+  String inkTool = 'pen';
+  bool temporaryEraser = false;
+  String lastWritingTool = 'pen';
+  bool focusReading = false;
+  late bool penOnly = widget.workspace.preferences['reader.penOnly'] != 'false';
+  late final inkWidths = {
+    for (final tool in ['pen', 'marker', 'line']) tool: readInkWidth(tool),
+  };
+  double readInkWidth(String tool) {
+    final preferences = widget.workspace.preferences;
+    final value = double.tryParse(
+      preferences['reader.width.$tool'] ?? preferences['reader.penWidth'] ?? '',
+    );
+    return value != null && value.isFinite ? value.clamp(.5, 20) : 2;
+  }
+
+  String get settingsTool =>
+      inkWidths.containsKey(inkTool) ? inkTool : lastWritingTool;
+  double get penWidth => inkWidths[settingsTool]!;
+  int get activeColor => settingsTool == 'marker' ? highlightColor : penColor;
+  static const inkColors = {
+    0xff212121: '검정',
+    0xff234b80: '남색',
+    0xffe53935: '빨강',
+    0xffffd54f: '노랑',
+    0xff81c784: '초록',
+    0xff64b5f6: '하늘색',
+  };
+
+  void chooseTool(String tool) {
+    setState(() {
+      inkTool = tool;
+      temporaryEraser = false;
+      if (inkWidths.containsKey(tool)) lastWritingTool = tool;
+    });
+  }
+
+  Future<void> saveWidth(String tool, double width) => safely(
+    () => widget.workspace.setPreference('reader.width.$tool', '$width'),
+  );
+
+  void chooseWidth(double width) {
+    final tool = settingsTool;
+    setState(() => inkWidths[tool] = width);
+    saveWidth(tool, width);
+  }
+
+  Future<void> savePreset(int slot) async {
+    await safely(() async {
+      await PenPreset(
+        '즐겨찾기 ${slot + 1}',
+        settingsTool,
+        activeColor,
+        penWidth,
+      ).save(widget.workspace, slot);
+      if (mounted) setState(() => presets = PenPreset.read(widget.workspace));
+    });
+  }
+
+  void choosePreset(PenPreset preset) {
+    chooseTool(preset.tool);
+    setState(() {
+      inkWidths[preset.tool] = preset.width;
+      if (preset.tool == 'marker') {
+        highlightColor = preset.color;
+      } else {
+        penColor = preset.color;
+      }
+    });
+    saveWidth(preset.tool, preset.width);
+    saveColor(preset.tool, preset.color);
+  }
+
+  void chooseColor(int color) {
+    final tool = settingsTool;
+    setState(() {
+      if (tool == 'marker') {
+        highlightColor = color;
+      } else {
+        penColor = color;
+      }
+    });
+    saveColor(tool, color);
+  }
+
+  Future<void> saveColor(String tool, int color) => safely(
+    () => widget.workspace.setPreference(
+      tool == 'marker' ? 'reader.highlightColor' : 'reader.penColor',
+      '$color',
+    ),
+  );
+  late int penColor =
+      int.tryParse(widget.workspace.preferences['reader.penColor'] ?? '') ??
+      0xff234b80;
   bool noteMode = false;
   WorkspaceObject? studyNote;
   late int readingTheme =
@@ -64,19 +171,256 @@ class _DocumentReaderState extends State<DocumentReader> {
         widget.workspace.preferences['reader.highlightColor'] ?? '',
       ) ??
       0xffffd54f;
-  double aiWidth = 420;
+  late double aiWidth = savedView.panelWidth;
+  Timer? viewTimer;
   List<PdfOutlineNode> outline = [];
   final searchInput = TextEditingController();
   final searchFocus = FocusNode();
+  final previewErasedIds = <String>{};
   final undoMarks = <List<String>>[];
   final redoMarks = <List<String>>[];
   DocumentContext? pinnedSelection;
+  late WorkspaceObject? studyAnchor = widget.studyAnchor;
+
+  Future<void> saveStudyAnchor() => safely(() async {
+    final selected = await documentContext(
+      usePinned: false,
+      selectionOnly: true,
+    );
+    if (!mounted || selected == null || selected.text.trim().isEmpty) return;
+    final ranges = await controller.textSelectionDelegate
+        .getSelectedTextRanges();
+    final bounds = ranges.firstOrNull?.bounds;
+    if (!mounted) return;
+    var draft = '';
+    final question = await showDialog<String>(
+      context: context,
+      builder: (dialog) => AlertDialog(
+        scrollable: true,
+        title: const Text('나중에 확인'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(selected.text, maxLines: 4, overflow: TextOverflow.ellipsis),
+            const SizedBox(height: 12),
+            TextField(
+              onChanged: (value) => draft = value,
+              decoration: const InputDecoration(labelText: '남겨둘 질문 (선택)'),
+              maxLines: 3,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialog),
+            child: const Text('취소'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialog, draft.trim()),
+            child: const Text('저장'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || question == null) return;
+    final saved = await widget.workspace.save('studyAnchor', {
+      'title': selected.title,
+      'documentId': selected.documentId,
+      'page': selected.page,
+      'versionHash': selected.versionHash,
+      'selection': selected.text,
+      if (bounds != null)
+        'bounds': [bounds.left, bounds.top, bounds.right, bounds.bottom],
+      'body': question,
+    });
+    if (mounted) setState(() => studyAnchor = saved);
+  });
+
+  Future<void> resolveStudyAnchor(WorkspaceObject anchor) => safely(() async {
+    await widget.workspace.save('studyAnchor', {
+      ...anchor.data,
+      'resolved': true,
+    }, id: anchor.id);
+    if (mounted && studyAnchor?.id == anchor.id) {
+      setState(() => studyAnchor = null);
+    }
+  });
+
+  void openSelectionQuestion(
+    DocumentContext selection,
+    String draft, {
+    bool sendNow = false,
+    WorkspaceObject? anchor,
+  }) {
+    Navigator.push(
+      context,
+      MaterialPageRoute<void>(
+        builder: (_) => AIChat(
+          workspace: widget.workspace,
+          documentId: selection.documentId,
+          scopeTitle: selection.title,
+          contextLabel:
+              '${selection.page}쪽 · ${anchor == null ? '선택 문장' : '저장된 문장'}',
+          contextBuilder: () async => selection,
+          sessionId: anchor?.text('sessionId').isNotEmpty == true
+              ? anchor!.text('sessionId')
+              : null,
+          initialQuestion: anchor?.text('sessionId').isNotEmpty == true
+              ? null
+              : draft,
+          sendInitialQuestion: sendNow,
+          startNewSession: anchor != null,
+          onQuestionSaved: anchor == null
+              ? null
+              : (session, question) => safely(() async {
+                  final current = widget.workspace.byId(anchor.id) ?? anchor;
+                  final saved = await widget.workspace.save('studyAnchor', {
+                    ...current.data,
+                    'sessionId': session,
+                    'body': question,
+                  }, id: anchor.id);
+                  if (mounted && studyAnchor?.id == anchor.id) {
+                    setState(() => studyAnchor = saved);
+                  }
+                }),
+        ),
+      ),
+    );
+  }
+
+  Widget studyResume(WorkspaceObject anchor) {
+    final sameVersion = anchor.text('versionHash') == document.text('hash');
+    final question = anchor.text('body');
+    return Material(
+      color: Theme.of(context).colorScheme.surfaceContainerLow,
+      child: ExpansionTile(
+        key: ValueKey(anchor.id),
+        initiallyExpanded: widget.studyAnchor?.id == anchor.id,
+        title: Text(
+          question.isEmpty ? '나중에 확인 · ${anchor.number('page', 1)}쪽' : question,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+        ),
+        subtitle: Text(
+          anchor.text('selection'),
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+        ),
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: SelectableText(anchor.text('selection')),
+          ),
+          if (!sameVersion) const Text('자료가 변경되었습니다. 저장한 문장을 원문과 대조하세요.'),
+          Wrap(
+            spacing: 8,
+            children: [
+              if (sameVersion)
+                TextButton(
+                  onPressed: () => openSelectionQuestion(
+                    DocumentContext(
+                      documentId: document.id,
+                      title: document.title,
+                      page: anchor.number('page', 1),
+                      text: anchor.text('selection'),
+                      versionHash: anchor.text('versionHash'),
+                    ),
+                    question,
+                    anchor: anchor,
+                  ),
+                  child: const Text('질문 이어가기'),
+                ),
+              TextButton(
+                onPressed: () => resolveStudyAnchor(anchor),
+                child: const Text('해결했음'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   String? error;
   PdfTextSearcher? searcher;
   @override
   void initState() {
     super.initState();
     widget.workspace.addListener(refreshMarks);
+    markSyncSeen(widget.workspace, document).catchError((_) {});
+    if (PdfConversion.canConvertLocally(document) &&
+        document.text('conversionStatus') != 'failed') {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) convertDocument();
+      });
+    }
+  }
+
+  void rememberJump() {
+    if (!controller.isReady) return;
+    final location = (
+      center: controller.centerPosition,
+      zoom: controller.currentZoom,
+      page: page,
+      fit: fitMode,
+    );
+    if (returnLocations.isNotEmpty &&
+        (returnLocations.last.center - location.center).distance < 1 &&
+        (returnLocations.last.zoom - location.zoom).abs() < .001) {
+      return;
+    }
+    setState(() {
+      returnLocations.add(location);
+      if (returnLocations.length > 30) returnLocations.removeAt(0);
+    });
+  }
+
+  Future<void> returnToReading() async {
+    if (!controller.isReady || returnLocations.isEmpty) return;
+    final location = returnLocations.removeLast();
+    setState(() => fitMode = location.fit);
+    await controller.goTo(
+      controller.calcMatrixFor(location.center, zoom: location.zoom),
+    );
+    rememberView();
+  }
+
+  Future<void> changeZoom(bool increase) async {
+    fitMode = 'custom';
+    if (increase) {
+      await controller.zoomUp();
+    } else {
+      await controller.zoomDown();
+    }
+    rememberView();
+  }
+
+  void rememberView() {
+    viewTimer?.cancel();
+    viewTimer = Timer(const Duration(milliseconds: 500), persistView);
+  }
+
+  void persistView() {
+    if (!controller.isReady || !restoredView) return;
+    ReaderViewSettings(
+      fit: fitMode,
+      zoom: controller.currentZoom,
+      x: controller.centerPosition.dx,
+      y: controller.centerPosition.dy,
+      panelWidth: aiWidth,
+      showAI: showAI,
+    ).save(widget.workspace, document.id).catchError((_) {});
+  }
+
+  Future<void> fitPage(String mode) async {
+    setState(() => fitMode = mode);
+    await controller.goTo(
+      mode == 'width'
+          ? controller.calcMatrixFitWidthForPage(pageNumber: page)
+          : controller.calcMatrixForFit(pageNumber: page),
+    );
+    rememberView();
   }
 
   void refreshMarks() {
@@ -134,6 +478,7 @@ class _DocumentReaderState extends State<DocumentReader> {
                   m.text('documentId') == document.id &&
                   m.number('page') == pdfPage.pageNumber,
             )) {
+      if (previewErasedIds.contains(mark.id)) continue;
       if (mark.text('type') == 'ink') {
         paintInk(canvas, pageRect, mark.data);
         continue;
@@ -178,6 +523,8 @@ class _DocumentReaderState extends State<DocumentReader> {
 
   @override
   void dispose() {
+    viewTimer?.cancel();
+    persistView();
     widget.workspace.removeListener(refreshMarks);
     searcher?.removeListener(searchChanged);
     searcher?.dispose();
@@ -258,8 +605,11 @@ class _DocumentReaderState extends State<DocumentReader> {
     ],
   );
 
-  Future<DocumentContext?> documentContext() async {
-    if (pinnedSelection != null) return pinnedSelection;
+  Future<DocumentContext?> documentContext({
+    bool usePinned = true,
+    bool selectionOnly = false,
+  }) async {
+    if (usePinned && pinnedSelection != null) return pinnedSelection;
     if (!controller.isReady ||
         !controller.textSelectionDelegate.isCopyAllowed) {
       return null;
@@ -274,6 +624,9 @@ class _DocumentReaderState extends State<DocumentReader> {
     final selection = selected.hasSelectedText
         ? await selected.getSelectedText()
         : '';
+    if (selectionOnly && (ranges.isEmpty || selection.trim().isEmpty)) {
+      return null;
+    }
     final text = selection.isNotEmpty
         ? selection
         : (await controller.document.pages[page - 1].loadText())?.fullText ??
@@ -287,10 +640,28 @@ class _DocumentReaderState extends State<DocumentReader> {
     );
   }
 
+  Future<StudyContext> resolveContext(String mode, String range) async {
+    if (mode == 'selection') {
+      if (pinnedSelection == null &&
+          (!controller.isReady ||
+              !controller.textSelectionDelegate.hasSelectedText)) {
+        throw const UserFacingException('먼저 PDF에서 질문할 문장을 선택하세요.');
+      }
+      final selected = await documentContext();
+      return StudyContext([?selected]);
+    }
+    return StudyContextService(widget.workspace)
+        .readScope(document, mode, page: page, range: range);
+  }
+
   Widget chat({bool embedded = false}) => AIChat(
     workspace: widget.workspace,
+    contextResolver: document.text('extension') == '.pdf'
+        ? resolveContext
+        : null,
     documentId: document.id,
     scopeTitle: document.title,
+    currentPageNumber: page,
     contextLabel: useCurrentPage ? '선택 문장 또는 현재 페이지 포함' : '이 자료 전체에서 근거 찾기',
     contextBuilder: useCurrentPage ? documentContext : null,
     requestDocument: true,
@@ -308,6 +679,7 @@ class _DocumentReaderState extends State<DocumentReader> {
         : null,
     onCitation: (id, targetPage) {
       if (id == document.id && controller.isReady) {
+        rememberJump();
         if (!embedded) Navigator.pop(context);
         if (embedded && questionFocus) setState(() => questionFocus = false);
         controller.goToPage(pageNumber: targetPage);
@@ -361,6 +733,7 @@ class _DocumentReaderState extends State<DocumentReader> {
                         ),
                         onTap: () {
                           if (controller.isReady) {
+                            rememberJump();
                             controller.goToPage(
                               pageNumber: mark.number('page', 1),
                             );
@@ -416,6 +789,7 @@ class _DocumentReaderState extends State<DocumentReader> {
     try {
       pinnedSelection = null;
       final selected = await documentContext();
+      await widget.workspace.setPreference('reader.referenceMode', 'selection');
       if (!mounted) return;
       setState(() {
         pinnedSelection = selected;
@@ -447,7 +821,7 @@ class _DocumentReaderState extends State<DocumentReader> {
                 const ListTile(title: Text('질문할 범위')),
                 ListTile(
                   leading: const Icon(Icons.description_outlined),
-                  title: const Text('자료 전체에서 근거 찾기'),
+                  title: const Text('PDF 전문 · 모든 페이지'),
                   onTap: () => Navigator.pop(context, 0),
                 ),
                 ListTile(
@@ -471,6 +845,14 @@ class _DocumentReaderState extends State<DocumentReader> {
         if (mode == 1) {
           await controller.textSelectionDelegate.clearTextSelection();
         }
+        await widget.workspace.setPreference(
+          'reader.referenceMode',
+          mode == 0
+              ? 'full'
+              : mode == 1
+              ? 'current'
+              : 'selection',
+        );
         if (mode == 2) pinnedSelection = await documentContext();
       }
       if (!mounted) return;
@@ -484,9 +866,10 @@ class _DocumentReaderState extends State<DocumentReader> {
     final ids = stack.last;
     await safely(() async {
       for (final id in ids) {
-        final mark = widget.workspace.byId(id);
+        final erased = id.startsWith('erase:');
+        final mark = widget.workspace.byId(erased ? id.substring(6) : id);
         if (mark != null) {
-          if (redo) {
+          if (redo != erased) {
             await widget.workspace.restore(mark);
           } else {
             await widget.workspace.trash(mark);
@@ -518,7 +901,10 @@ class _DocumentReaderState extends State<DocumentReader> {
                   : ListView.builder(
                       itemCount: controller.pageCount,
                       itemBuilder: (context, index) => InkWell(
-                        onTap: () => controller.goToPage(pageNumber: index + 1),
+                        onTap: () {
+                          rememberJump();
+                          controller.goToPage(pageNumber: index + 1);
+                        },
                         child: Container(
                           margin: const EdgeInsets.all(12),
                           padding: const EdgeInsets.all(8),
@@ -560,14 +946,20 @@ class _DocumentReaderState extends State<DocumentReader> {
   Widget outlineTile(PdfOutlineNode node) => node.children.isEmpty
       ? ListTile(
           title: Text(node.title),
-          onTap: () => controller.goToDest(node.dest),
+          onTap: () {
+            rememberJump();
+            controller.goToDest(node.dest);
+          },
         )
       : ExpansionTile(
           title: Text(node.title),
           leading: IconButton(
             tooltip: '목차로 이동',
             icon: const Icon(Icons.arrow_forward, size: 18),
-            onPressed: () => controller.goToDest(node.dest),
+            onPressed: () {
+              rememberJump();
+              controller.goToDest(node.dest);
+            },
           ),
           children: node.children.map(outlineTile).toList(),
         );
@@ -593,241 +985,297 @@ class _DocumentReaderState extends State<DocumentReader> {
         controller.isReady &&
         target > 0 &&
         target <= controller.pageCount) {
+      rememberJump();
       await controller.goToPage(pageNumber: target);
     }
   }
 
-  Widget tools() => Material(
-    color: Theme.of(context).colorScheme.surfaceContainerLow,
-    child: SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: Row(
-        children: [
-          PopupMenuButton<String>(
-            tooltip: '읽기 · 필기 도구',
-            onSelected: (value) => setState(() => inkTool = value),
-            itemBuilder: (_) => const [
-              PopupMenuItem(value: 'read', child: Text('읽기 · 선택 · 이동')),
-              PopupMenuItem(value: 'pen', child: Text('펜 필기')),
-              PopupMenuItem(value: 'marker', child: Text('자유 형광펜')),
-              PopupMenuItem(value: 'line', child: Text('직선 밑줄')),
-            ],
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              child: Row(
+  Future<void> openReaderSettings() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute<void>(
+        builder: (_) => ReaderSettings(workspace: widget.workspace),
+      ),
+    );
+    if (mounted) {
+      setState(() {
+        penOnly = widget.workspace.preferences['reader.penOnly'] != 'false';
+        readingTheme =
+            (int.tryParse(widget.workspace.preferences['reader.theme'] ?? '') ??
+                    0)
+                .clamp(0, 2);
+      });
+    }
+  }
+
+  Future<void> penOptions() => showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    showDragHandle: true,
+    builder: (sheetContext) => StatefulBuilder(
+      builder: (_, update) => SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('펜 설정', style: Theme.of(context).textTheme.titleLarge),
+              const SizedBox(height: 16),
+              Wrap(
+                spacing: 8,
                 children: [
-                  Icon(
-                    inkTool == 'read'
-                        ? Icons.pan_tool_outlined
-                        : inkTool == 'marker'
-                        ? Icons.highlight
-                        : inkTool == 'line'
-                        ? Icons.format_underlined
-                        : Icons.draw_outlined,
-                    color: inkTool == 'read'
-                        ? null
-                        : Theme.of(context).colorScheme.primary,
-                  ),
-                  const SizedBox(width: 6),
-                  Text(
-                    {
-                      'read': '읽기',
-                      'pen': '펜 필기',
-                      'marker': '형광펜',
-                      'line': '밑줄',
-                    }[inkTool]!,
-                  ),
-                  const Icon(Icons.arrow_drop_down),
+                  for (final entry in {
+                    'pen': '펜',
+                    'marker': '형광펜',
+                    'line': '직선 밑줄',
+                  }.entries)
+                    ChoiceChip(
+                      label: Text(entry.value),
+                      selected: settingsTool == entry.key,
+                      onSelected: (_) {
+                        chooseTool(entry.key);
+                        update(() {});
+                      },
+                    ),
                 ],
               ),
-            ),
-          ),
-          if (inkTool != 'read') ...[
-            PopupMenuButton<int>(
-              tooltip: '펜 색상',
-              icon: Icon(
-                Icons.circle,
-                color: Color(inkTool == 'marker' ? highlightColor : penColor),
-              ),
-              onSelected: (value) => setState(() {
-                if (inkTool == 'marker') {
-                  highlightColor = value;
-                } else {
-                  penColor = value;
-                }
-              }),
-              itemBuilder: (_) => [
-                for (final color in [
-                  0xff234b80,
-                  0xff212121,
-                  0xffe53935,
-                  0xffffd54f,
-                  0xff81c784,
-                ])
-                  PopupMenuItem(
-                    value: color,
-                    child: Icon(Icons.circle, color: Color(color)),
-                  ),
-              ],
-            ),
-            PopupMenuButton<double>(
-              tooltip: '펜 굵기',
-              icon: const Icon(Icons.line_weight),
-              onSelected: (value) => setState(() => penWidth = value),
-              itemBuilder: (_) => [
-                for (final width in [1.0, 2.0, 4.0])
-                  PopupMenuItem(
-                    value: width,
-                    child: Text(
-                      '${width.toInt()} · ${width == 1
-                          ? '가늘게'
-                          : width == 2
-                          ? '보통'
-                          : '굵게'}',
+              const SizedBox(height: 16),
+              Wrap(
+                spacing: 8,
+                children: [
+                  for (final color in inkColors.keys)
+                    IconButton(
+                      tooltip: inkColors[color],
+                      isSelected: activeColor == color,
+                      onPressed: () {
+                        chooseColor(color);
+                        update(() {});
+                      },
+                      icon: Icon(Icons.circle, color: Color(color)),
+                      style: IconButton.styleFrom(
+                        side: BorderSide(
+                          color: Theme.of(context).colorScheme.outlineVariant,
+                        ),
+                      ),
                     ),
-                  ),
-              ],
-            ),
-          ],
-          IconButton(
-            tooltip: '페이지 · 목차 · 주석',
-            onPressed: openNavigation,
-            icon: const Icon(Icons.view_sidebar_outlined),
-          ),
-          IconButton(
-            tooltip: '이전 페이지',
-            onPressed: controller.isReady && page > 1
-                ? () => controller.goToPage(pageNumber: page - 1)
-                : null,
-            icon: const Icon(Icons.chevron_left),
-          ),
-          TextButton(
-            onPressed: goToPage,
-            child: Text(
-              '$page / ${controller.isReady ? controller.pageCount : "…"}',
-            ),
-          ),
-          IconButton(
-            tooltip: '다음 페이지',
-            onPressed: controller.isReady && page < controller.pageCount
-                ? () => controller.goToPage(pageNumber: page + 1)
-                : null,
-            icon: const Icon(Icons.chevron_right),
-          ),
-          const SizedBox(width: 12),
-          IconButton(
-            tooltip: '축소',
-            onPressed: controller.isReady ? () => controller.zoomDown() : null,
-            icon: const Icon(Icons.remove),
-          ),
-          ListenableBuilder(
-            listenable: controller,
-            builder: (_, _) => SizedBox(
-              width: 52,
-              child: Text(
-                controller.isReady
-                    ? '${(controller.currentZoom * 100).round()}%'
-                    : '—',
-                textAlign: TextAlign.center,
+                ],
               ),
-            ),
-          ),
-          IconButton(
-            tooltip: '확대',
-            onPressed: controller.isReady ? () => controller.zoomUp() : null,
-            icon: const Icon(Icons.add),
-          ),
-          TextButton(
-            onPressed: controller.isReady
-                ? () => controller.goTo(
-                    controller.calcMatrixFitWidthForPage(pageNumber: page),
-                  )
-                : null,
-            child: const Text('너비 맞춤'),
-          ),
-          TextButton(
-            onPressed: controller.isReady
-                ? () => controller.goTo(
-                    controller.calcMatrixForFit(pageNumber: page),
-                  )
-                : null,
-            child: const Text('한 페이지'),
-          ),
-          IconButton(
-            tooltip: 'PDF 본문 검색',
-            onPressed: () => setState(() => searchOpen = !searchOpen),
-            icon: const Icon(Icons.search),
-          ),
-          IconButton(
-            tooltip: '페이지 메모',
-            onPressed: () => addMark('note'),
-            icon: const Icon(Icons.note_add_outlined),
-          ),
-          PopupMenuButton<int>(
-            tooltip: '주석 색상',
-            icon: Icon(Icons.format_color_fill, color: Color(highlightColor)),
-            onSelected: (value) {
-              setState(() => highlightColor = value);
-              safely(
-                () => widget.workspace.setPreference(
-                  'reader.highlightColor',
-                  '$value',
-                ),
-              );
-            },
-            itemBuilder: (_) => [
-              for (final entry in {
-                0xffffd54f: '노랑',
-                0xff81c784: '초록',
-                0xff64b5f6: '파랑',
-                0xfff48fb1: '분홍',
-              }.entries)
-                PopupMenuItem(
-                  value: entry.key,
-                  child: Row(
-                    children: [
-                      Icon(Icons.circle, color: Color(entry.key)),
-                      const SizedBox(width: 10),
-                      Text(entry.value),
-                    ],
-                  ),
-                ),
+              const SizedBox(height: 12),
+              Text('굵기 ${penWidth.toStringAsFixed(1)}'),
+              Slider(
+                value: penWidth,
+                min: .5,
+                max: 20,
+                divisions: 39,
+                onChanged: (value) {
+                  setState(() => inkWidths[settingsTool] = value);
+                  update(() {});
+                },
+                onChangeEnd: (value) => saveWidth(settingsTool, value),
+              ),
+              const Text('즐겨찾기 · 눌러 사용 / 길게 눌러 현재 펜 저장'),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                children: [
+                  for (var slot = 0; slot < presets.length; slot++)
+                    GestureDetector(
+                      onLongPress: () async {
+                        await savePreset(slot);
+                        if (sheetContext.mounted) update(() {});
+                      },
+                      child: OutlinedButton.icon(
+                        onPressed: () {
+                          choosePreset(presets[slot]);
+                          update(() {});
+                        },
+                        icon: Icon(
+                          Icons.draw_outlined,
+                          color: Color(presets[slot].color),
+                        ),
+                        label: Text('${slot + 1}'),
+                      ),
+                    ),
+                ],
+              ),
             ],
           ),
-          IconButton(
-            tooltip: '주석 실행 취소',
-            onPressed: undoMarks.isEmpty ? null : () => undoHighlight(),
-            icon: const Icon(Icons.undo),
-          ),
-          IconButton(
-            tooltip: '주석 다시 실행',
-            onPressed: redoMarks.isEmpty
-                ? null
-                : () => undoHighlight(redo: true),
-            icon: const Icon(Icons.redo),
-          ),
-          DropdownButton<int>(
-            value: readingTheme,
-            underline: const SizedBox(),
-            onChanged: (value) {
-              setState(() => readingTheme = value ?? 0);
-              safely(
-                () => widget.workspace.setPreference(
-                  'reader.theme',
-                  '$readingTheme',
-                ),
-              );
-            },
-            items: const [
-              DropdownMenuItem(value: 0, child: Text('원본')),
-              DropdownMenuItem(value: 1, child: Text('따뜻하게')),
-              DropdownMenuItem(value: 2, child: Text('야간 읽기')),
-            ],
-          ),
-        ],
+        ),
       ),
     ),
   );
+
+  Future<void> pageOptions() => showModalBottomSheet<void>(
+    context: context,
+    showDragHandle: true,
+    isScrollControlled: true,
+    builder: (sheetContext) => StatefulBuilder(
+      builder: (_, update) => SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('페이지 · 보기', style: Theme.of(context).textTheme.titleLarge),
+              Row(
+                children: [
+                  IconButton(
+                    tooltip: '이전 페이지',
+                    onPressed: controller.isReady && page > 1
+                        ? () async {
+                            await controller.goToPage(pageNumber: page - 1);
+                            if (sheetContext.mounted) update(() {});
+                          }
+                        : null,
+                    icon: const Icon(Icons.chevron_left),
+                  ),
+                  TextButton(
+                    onPressed: () async {
+                      await goToPage();
+                      if (sheetContext.mounted) update(() {});
+                    },
+                    child: Text(
+                      '$page / ${controller.isReady ? controller.pageCount : "…"}',
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: '다음 페이지',
+                    onPressed: controller.isReady && page < controller.pageCount
+                        ? () async {
+                            await controller.goToPage(pageNumber: page + 1);
+                            if (sheetContext.mounted) update(() {});
+                          }
+                        : null,
+                    icon: const Icon(Icons.chevron_right),
+                  ),
+                ],
+              ),
+              Wrap(
+                spacing: 8,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  IconButton(
+                    tooltip: '축소',
+                    onPressed: controller.isReady
+                        ? () async {
+                            await changeZoom(false);
+                            if (sheetContext.mounted) update(() {});
+                          }
+                        : null,
+                    icon: const Icon(Icons.remove),
+                  ),
+                  Text(
+                    controller.isReady
+                        ? '${(controller.currentZoom * 100).round()}%'
+                        : '—',
+                  ),
+                  IconButton(
+                    tooltip: '확대',
+                    onPressed: controller.isReady
+                        ? () async {
+                            await changeZoom(true);
+                            if (sheetContext.mounted) update(() {});
+                          }
+                        : null,
+                    icon: const Icon(Icons.add),
+                  ),
+                  TextButton(
+                    onPressed: controller.isReady
+                        ? () => fitPage('width')
+                        : null,
+                    child: const Text('너비 맞춤'),
+                  ),
+                  TextButton(
+                    onPressed: controller.isReady
+                        ? () => fitPage('page')
+                        : null,
+                    child: const Text('한 페이지'),
+                  ),
+                ],
+              ),
+              const Divider(height: 24),
+              Wrap(
+                spacing: 8,
+                children: [
+                  TextButton.icon(
+                    onPressed: () {
+                      Navigator.pop(sheetContext);
+                      openNavigation();
+                    },
+                    icon: const Icon(Icons.view_sidebar_outlined),
+                    label: const Text('페이지 · 목차 · 주석'),
+                  ),
+                  TextButton.icon(
+                    onPressed: () {
+                      Navigator.pop(sheetContext);
+                      setState(() => searchOpen = true);
+                    },
+                    icon: const Icon(Icons.search),
+                    label: const Text('PDF 본문 검색'),
+                  ),
+                  TextButton.icon(
+                    onPressed: () {
+                      Navigator.pop(sheetContext);
+                      addMark('bookmark');
+                    },
+                    icon: const Icon(Icons.bookmark_add_outlined),
+                    label: const Text('책갈피 추가'),
+                  ),
+                  TextButton.icon(
+                    onPressed: () {
+                      Navigator.pop(sheetContext);
+                      addMark('note');
+                    },
+                    icon: const Icon(Icons.note_add_outlined),
+                    label: const Text('페이지 메모'),
+                  ),
+                  TextButton.icon(
+                    onPressed: () {
+                      Navigator.pop(sheetContext);
+                      openStudyNote();
+                    },
+                    icon: const Icon(Icons.edit_note),
+                    label: const Text('자료 옆 정리 노트'),
+                  ),
+                  TextButton.icon(
+                    onPressed: () {
+                      Navigator.pop(sheetContext);
+                      openReaderSettings();
+                    },
+                    icon: const Icon(Icons.settings_outlined),
+                    label: const Text('읽기 · 필기 설정'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
+
+  Widget writingToolbar() => ReaderToolbar(
+    tool: inkTool,
+    onTool: chooseTool,
+    temporaryEraser: temporaryEraser,
+    color: activeColor,
+    colors: inkColors,
+    onColor: chooseColor,
+    width: penWidth,
+    onWidth: chooseWidth,
+    presets: presets,
+    onPreset: choosePreset,
+    onSavePreset: savePreset,
+    onPenSettings: penOptions,
+    onUndo: undoMarks.isEmpty ? null : () => undoHighlight(),
+    onRedo: redoMarks.isEmpty ? null : () => undoHighlight(redo: true),
+    onReturn: returnLocations.isEmpty ? null : returnToReading,
+    onPages: pageOptions,
+    pageLabel: '$page / ${controller.isReady ? controller.pageCount : "…"}',
+  );
+
   Widget filteredPdf(File file, WorkspaceObject doc) {
     final viewer = pdfViewer(file, doc);
     return ColorFiltered(
@@ -889,9 +1337,65 @@ class _DocumentReaderState extends State<DocumentReader> {
     controller: controller,
     initialPageNumber: page,
     params: PdfViewerParams(
-      panEnabled: inkTool == 'read',
+      panEnabled: inkTool == 'read' || penOnly,
       textSelectionParams: PdfTextSelectionParams(enabled: inkTool == 'read'),
+      onInteractionStart: (_) => interactionZoom = controller.currentZoom,
+      onInteractionEnd: (_) {
+        if (interactionZoom != null &&
+            (interactionZoom! - controller.currentZoom).abs() > .001) {
+          fitMode = 'custom';
+        }
+        rememberView();
+      },
+      onViewSizeChanged: (_, oldSize, _) {
+        if (oldSize == null || !restoredView || fitMode == 'custom') return;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && controller.isReady) fitPage(fitMode);
+        });
+      },
       onViewerReady: (_, _) {
+        if (!restoredView) {
+          restoredView = true;
+          WidgetsBinding.instance.addPostFrameCallback((_) async {
+            if (!mounted || !controller.isReady) return;
+            if (savedView.fit == 'width' || savedView.fit == 'page') {
+              await fitPage(savedView.fit);
+            } else if (widget.initialPage == null &&
+                savedView.x != null &&
+                savedView.y != null) {
+              await controller.goTo(
+                controller.calcMatrixFor(
+                  Offset(savedView.x!, savedView.y!),
+                  zoom: savedView.zoom,
+                ),
+                duration: Duration.zero,
+              );
+            }
+            final anchor = studyAnchor;
+            final bounds = anchor?.data['bounds'];
+            if (mounted &&
+                controller.isReady &&
+                anchor != null &&
+                anchor.text('versionHash') == document.text('hash') &&
+                bounds is List &&
+                bounds.length == 4 &&
+                bounds.every((v) => v is num && v.isFinite)) {
+              final target = anchor.number('page', 1);
+              if (target >= 1 && target <= controller.pageCount) {
+                await controller.goToRectInsidePage(
+                  pageNumber: target,
+                  rect: PdfRect(
+                    (bounds[0] as num).toDouble(),
+                    (bounds[1] as num).toDouble(),
+                    (bounds[2] as num).toDouble(),
+                    (bounds[3] as num).toDouble(),
+                  ),
+                  duration: Duration.zero,
+                );
+              }
+            }
+          });
+        }
         if (searcher == null) {
           searcher = PdfTextSearcher(controller)..addListener(searchChanged);
           controller.document
@@ -908,34 +1412,87 @@ class _DocumentReaderState extends State<DocumentReader> {
         if (searcher != null) searcher!.pageTextMatchPaintCallback,
       ],
       pageOverlaysBuilder: (_, rect, pdfPage) => [
-        if (inkTool != 'read')
-          Positioned.fill(
-            child: InkSurface(
-              key: ValueKey('ink-${pdfPage.pageNumber}-$inkTool'),
-              tool: inkTool,
-              color: inkTool == 'marker' ? highlightColor : penColor,
-              width: penWidth,
-              onSave: (stroke) => safely(() async {
-                final mark = await widget.workspace.save('annotation', {
-                  ...stroke,
-                  'title':
-                      '${inkTool == 'pen'
-                          ? '펜 필기'
-                          : inkTool == 'marker'
-                          ? '형광펜'
-                          : '밑줄'} · ${pdfPage.pageNumber}페이지',
-                  'type': 'ink',
-                  'documentId': document.id,
-                  'page': pdfPage.pageNumber,
-                  'versionHash': document.text('hash'),
-                });
-                undoMarks.add([mark.id]);
-                redoMarks.clear();
+        Positioned.fill(
+          child: InkSurface(
+            key: ValueKey('ink-${pdfPage.pageNumber}-$inkTool'),
+            tool: inkTool,
+            penOnly: penOnly,
+            onTemporaryEraser: (value) {
+              if (mounted && value != temporaryEraser) {
+                setState(() => temporaryEraser = value);
+              }
+            },
+            onErasePreview: (sweep) {
+              var changed = false;
+              for (final mark
+                  in widget.workspace
+                      .ofKind('annotation')
+                      .where(
+                        (m) =>
+                            m.text('documentId') == document.id &&
+                            m.number('page') == pdfPage.pageNumber &&
+                            m.text('type') == 'ink' &&
+                            !previewErasedIds.contains(m.id),
+                      )) {
+                if (inkIntersects(mark.data, sweep, rect.size)) {
+                  previewErasedIds.add(mark.id);
+                  changed = true;
+                }
+              }
+              if (changed && controller.isReady) controller.invalidate();
+            },
+            onPreviewEnd: () {
+              previewErasedIds.clear();
+              if (mounted && controller.isReady) controller.invalidate();
+            },
+            color: activeColor,
+            width: penWidth,
+            onSave: (stroke) => safely(() async {
+              if (stroke['tool'] == 'eraser') {
+                final erased = <String>[];
+                for (final mark
+                    in widget.workspace
+                        .ofKind('annotation')
+                        .where(
+                          (m) =>
+                              m.text('documentId') == document.id &&
+                              m.number('page') == pdfPage.pageNumber &&
+                              m.text('type') == 'ink',
+                        )
+                        .toList()) {
+                  if (inkIntersects(mark.data, stroke, rect.size)) {
+                    await widget.workspace.trash(mark);
+                    erased.add('erase:${mark.id}');
+                  }
+                }
+                if (erased.isNotEmpty) {
+                  undoMarks.add(erased);
+                  redoMarks.clear();
+                }
                 controller.invalidate();
                 if (mounted) setState(() {});
-              }),
-            ),
+                return;
+              }
+              final mark = await widget.workspace.save('annotation', {
+                ...stroke,
+                'title':
+                    '${inkTool == 'pen'
+                        ? '펜 필기'
+                        : inkTool == 'marker'
+                        ? '형광펜'
+                        : '밑줄'} · ${pdfPage.pageNumber}페이지',
+                'type': 'ink',
+                'documentId': document.id,
+                'page': pdfPage.pageNumber,
+                'versionHash': document.text('hash'),
+              });
+              undoMarks.add([mark.id]);
+              redoMarks.clear();
+              controller.invalidate();
+              if (mounted) setState(() {});
+            }),
           ),
+        ),
       ],
       customizeContextMenuItems: (params, items) {
         final selection = params.textSelectionDelegate;
@@ -943,6 +1500,32 @@ class _DocumentReaderState extends State<DocumentReader> {
           return;
         }
         items.addAll([
+          ContextMenuButtonItem(
+            label: '핵심 설명',
+            onPressed: () async {
+              params.dismissContextMenu();
+              await safely(() async {
+                final selected = await documentContext(
+                  usePinned: false,
+                  selectionOnly: true,
+                );
+                if (mounted && selected != null) {
+                  openSelectionQuestion(
+                    selected,
+                    '선택한 문장의 핵심을 먼저 짧게 설명하고, 이유와 원문 근거를 알려줘.',
+                    sendNow: true,
+                  );
+                }
+              });
+            },
+          ),
+          ContextMenuButtonItem(
+            label: '나중에 확인',
+            onPressed: () {
+              params.dismissContextMenu();
+              saveStudyAnchor();
+            },
+          ),
           ContextMenuButtonItem(
             label: '선택 문장 질문',
             onPressed: () {
@@ -970,6 +1553,7 @@ class _DocumentReaderState extends State<DocumentReader> {
       onPageChanged: (value) {
         if (value == null) return;
         setState(() => page = value);
+        rememberView();
         pageTimer?.cancel();
         pageTimer = Timer(
           const Duration(milliseconds: 400),
@@ -992,10 +1576,10 @@ class _DocumentReaderState extends State<DocumentReader> {
           }
         },
         const SingleActivator(LogicalKeyboardKey.equal, control: true): () {
-          if (controller.isReady) controller.zoomUp();
+          if (controller.isReady) changeZoom(true);
         },
         const SingleActivator(LogicalKeyboardKey.minus, control: true): () {
-          if (controller.isReady) controller.zoomDown();
+          if (controller.isReady) changeZoom(false);
         },
         const SingleActivator(LogicalKeyboardKey.digit0, control: true): () {
           if (controller.isReady) {
@@ -1008,210 +1592,125 @@ class _DocumentReaderState extends State<DocumentReader> {
       child: Focus(
         autofocus: true,
         child: Scaffold(
-          appBar: AppBar(
-            title: Text(doc.title, overflow: TextOverflow.ellipsis),
-            actions: [
-              IconButton(
-                tooltip: '자료 옆 정리 노트',
-                onPressed: openStudyNote,
-                icon: const Icon(Icons.edit_note),
-              ),
-              IconButton(
-                tooltip: '책갈피 추가',
-                icon: const Icon(Icons.bookmark_add_outlined),
-                onPressed: () => addMark('bookmark'),
-              ),
-              TextButton.icon(
-                onPressed: () {
-                  if (wide) {
-                    setState(() {
-                      showAI = noteMode || !showAI;
-                      noteMode = false;
-                      if (!showAI) questionFocus = false;
-                    });
-                  } else {
-                    openQuestions(chooseScope: true);
-                  }
-                },
-                icon: const Icon(Icons.auto_awesome_outlined),
-                label: const Text('자료 질문'),
-              ),
-              PopupMenuButton<String>(
-                key: const ValueKey('reader-document-menu'),
-                tooltip: '자료 메뉴',
-                onSelected: (value) async {
-                  if (value == 'external') {
-                    await OpenFilex.open(file.path);
-                  } else if (value == 'highlight' || value == 'underline') {
-                    if (controller.isReady) {
-                      await highlight(controller.textSelectionDelegate, value);
-                    }
-                  } else if (value == 'search') {
-                    setState(() => searchOpen = true);
-                  } else if (value == 'ai') {
-                    openQuestions();
-                  }
-                },
-                itemBuilder: (_) => [
-                  if (pdf) ...const [
-                    PopupMenuItem(
-                      value: 'highlight',
-                      child: Text('선택 영역 하이라이트'),
-                    ),
-                    PopupMenuItem(value: 'underline', child: Text('선택 영역 밑줄')),
-                    PopupMenuItem(value: 'search', child: Text('PDF 본문 검색')),
-                  ],
-                  const PopupMenuItem(value: 'ai', child: Text('이 자료에 질문')),
-                  const PopupMenuItem(
-                    value: 'external',
-                    child: Text('외부 앱으로 열기'),
-                  ),
-                ],
-              ),
-            ],
-          ),
-          body: Column(
-            children: [
-              if (pdf && !(wide && showAI && questionFocus)) tools(),
-              if (pdf && searchOpen && !(wide && showAI && questionFocus))
-                Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 6,
-                  ),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: TextField(
-                          key: const ValueKey('pdf-search'),
-                          focusNode: searchFocus,
-                          controller: searchInput,
-                          decoration: const InputDecoration(
-                            isDense: true,
-                            hintText: '본문에서 찾기 · Enter',
-                          ),
-                          onSubmitted: (value) =>
-                              searcher?.startTextSearch(value),
-                        ),
-                      ),
-                      IconButton(
-                        tooltip: '본문 검색 실행',
-                        onPressed: () =>
-                            searcher?.startTextSearch(searchInput.text),
-                        icon: const Icon(Icons.search),
-                      ),
-                      Text(
-                        '${searcher?.currentIndex == null ? 0 : searcher!.currentIndex! + 1}/${searcher?.matches.length ?? 0}',
-                      ),
-                      IconButton(
-                        tooltip: '이전 검색 결과',
-                        onPressed: () => searcher?.goToPrevMatch(),
-                        icon: const Icon(Icons.keyboard_arrow_up),
-                      ),
-                      IconButton(
-                        tooltip: '다음 검색 결과',
-                        onPressed: () => searcher?.goToNextMatch(),
-                        icon: const Icon(Icons.keyboard_arrow_down),
-                      ),
-                      IconButton(
-                        tooltip: '검색 닫기',
-                        onPressed: () => setState(() => searchOpen = false),
-                        icon: const Icon(Icons.close),
-                      ),
-                    ],
-                  ),
-                ),
-              if (error != null)
-                MaterialBanner(
-                  content: Text(error!),
+          appBar: focusReading
+              ? null
+              : AppBar(
+                  toolbarHeight: 44,
+                  title: Text(doc.title, overflow: TextOverflow.ellipsis),
                   actions: [
-                    TextButton(
-                      onPressed: () => setState(() => error = null),
-                      child: const Text('닫기'),
+                    IconButton(
+                      tooltip: '집중해서 필기',
+                      onPressed: () => setState(() {
+                        focusReading = true;
+                        if (inkTool == 'read') inkTool = lastWritingTool;
+                        showAI = false;
+                        questionFocus = false;
+                      }),
+                      icon: const Icon(Icons.fullscreen),
+                    ),
+                    IconButton(
+                      tooltip: '자료 질문 열기 · 닫기',
+                      onPressed: () {
+                        if (wide) {
+                          setState(() {
+                            showAI = noteMode || !showAI;
+                            noteMode = false;
+                            if (!showAI) questionFocus = false;
+                          });
+                          rememberView();
+                        } else {
+                          openQuestions(chooseScope: true);
+                        }
+                      },
+                      icon: const Icon(Icons.auto_awesome_outlined),
+                    ),
+                    if (doc.flag('conversionTextOnly'))
+                      const Tooltip(
+                        message: '본문 추출 PDF · 원본의 그림과 배치는 원본 파일에서 확인하세요.',
+                        child: Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 8),
+                          child: Icon(Icons.info_outline, size: 18),
+                        ),
+                      ),
+                    PopupMenuButton<String>(
+                      key: const ValueKey('reader-document-menu'),
+                      tooltip: '자료 메뉴',
+                      onSelected: (value) async {
+                        if (value == 'external') {
+                          final source = widget.workspace.byId(
+                            doc.text('derivedFrom'),
+                          );
+                          await OpenFilex.open(
+                            source == null || source.deleted
+                                ? file.path
+                                : widget.workspace.fileFor(source).path,
+                          );
+                        } else if (value == 'highlight' ||
+                            value == 'underline') {
+                          if (controller.isReady) {
+                            await highlight(
+                              controller.textSelectionDelegate,
+                              value,
+                            );
+                          }
+                        } else if (value == 'search') {
+                          setState(() => searchOpen = true);
+                        } else if (value == 'ai') {
+                          openQuestions();
+                        } else if (value == 'anchor') {
+                          await saveStudyAnchor();
+                        }
+                      },
+                      itemBuilder: (_) => [
+                        if (pdf &&
+                            controller.isReady &&
+                            controller.textSelectionDelegate.hasSelectedText &&
+                            controller.textSelectionDelegate.isCopyAllowed)
+                          const PopupMenuItem(
+                            value: 'anchor',
+                            child: Text('나중에 확인'),
+                          ),
+                        if (pdf) ...const [
+                          PopupMenuItem(
+                            value: 'highlight',
+                            child: Text('선택 영역 하이라이트'),
+                          ),
+                          PopupMenuItem(
+                            value: 'underline',
+                            child: Text('선택 영역 밑줄'),
+                          ),
+                          PopupMenuItem(
+                            value: 'search',
+                            child: Text('PDF 본문 검색'),
+                          ),
+                        ],
+                        const PopupMenuItem(
+                          value: 'ai',
+                          child: Text('이 자료에 질문'),
+                        ),
+                        PopupMenuItem(
+                          value: 'external',
+                          child: Text(
+                            doc.text('derivedFrom').isEmpty
+                                ? '외부 앱으로 열기'
+                                : '원본을 외부 앱으로 열기',
+                          ),
+                        ),
+                      ],
                     ),
                   ],
                 ),
-              Expanded(
-                child: Row(
-                  children: [
-                    if (pdf && wide && panel && !(showAI && questionFocus)) ...[
-                      SizedBox(width: 250, child: navigation()),
-                      const VerticalDivider(width: 1),
-                    ],
-                    Expanded(
-                      key: const ValueKey('reader-document'),
-                      child: Offstage(
-                        offstage: wide && showAI && questionFocus,
-                        child: OverflowBox(
-                          minWidth: wide && showAI && questionFocus
-                              ? (MediaQuery.sizeOf(context).width - aiWidth - 8)
-                                    .clamp(320, double.infinity)
-                              : null,
-                          maxWidth: wide && showAI && questionFocus
-                              ? (MediaQuery.sizeOf(context).width - aiWidth - 8)
-                                    .clamp(320, double.infinity)
-                              : null,
-                          child: pdf
-                              ? filteredPdf(file, doc)
-                              : _FilePreview(
-                                  file: file,
-                                  extension: doc.text('extension'),
-                                  conversionError: doc.text('conversionError'),
-                                  converting: converting,
-                                  onConvert: PdfConversion.supports(doc)
-                                      ? convertDocument
-                                      : null,
-                                ),
-                        ),
-                      ),
-                    ),
-                    if (wide) ...[
-                      GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onHorizontalDragUpdate: questionFocus
-                            ? null
-                            : (drag) => setState(
-                                () => aiWidth = (aiWidth - drag.delta.dx).clamp(
-                                  320,
-                                  MediaQuery.sizeOf(context).width * .55,
-                                ),
-                              ),
-                        child: MouseRegion(
-                          cursor: SystemMouseCursors.resizeLeftRight,
-                          child: SizedBox(
-                            width: showAI ? 8 : 0,
-                            child: const VerticalDivider(width: 1),
-                          ),
-                        ),
-                      ),
-                      SizedBox(
-                        key: const ValueKey('reader-question-panel'),
-                        width: !showAI
-                            ? 0
-                            : questionFocus
-                            ? MediaQuery.sizeOf(context).width - 8
-                            : aiWidth.clamp(
-                                320,
-                                MediaQuery.sizeOf(context).width * .55,
-                              ),
-                        child: Offstage(
-                          offstage: !showAI,
-                          child: OverflowBox(
-                            minWidth: !showAI ? aiWidth : null,
-                            maxWidth: !showAI ? aiWidth : null,
-                            child: studyPanel(),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-            ],
-          ),
-          bottomNavigationBar: pdf && !(wide && showAI && questionFocus)
-              ? SafeArea(
-                  child: Padding(
+          body: SafeArea(
+            top: focusReading,
+            child: Column(
+              children: [
+                if (!focusReading && studyAnchor != null)
+                  studyResume(studyAnchor!),
+                if (pdf &&
+                    !focusReading &&
+                    searchOpen &&
+                    !(wide && showAI && questionFocus))
+                  Padding(
                     padding: const EdgeInsets.symmetric(
                       horizontal: 16,
                       vertical: 6,
@@ -1219,22 +1718,162 @@ class _DocumentReaderState extends State<DocumentReader> {
                     child: Row(
                       children: [
                         Expanded(
-                          child: Text(
-                            '$page 페이지 · ${controller.isReady ? controller.pageCount : "…"}쪽',
-                            style: Theme.of(context).textTheme.bodySmall,
+                          child: TextField(
+                            key: const ValueKey('pdf-search'),
+                            focusNode: searchFocus,
+                            controller: searchInput,
+                            decoration: const InputDecoration(
+                              isDense: true,
+                              hintText: '본문에서 찾기 · Enter',
+                            ),
+                            onSubmitted: (value) =>
+                                searcher?.startTextSearch(value),
                           ),
                         ),
-                        Flexible(
-                          child: Text(
-                            '선택 후 우클릭/길게 눌러 주석 · 질문',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: Theme.of(context).textTheme.bodySmall,
-                          ),
+                        IconButton(
+                          tooltip: '본문 검색 실행',
+                          onPressed: () =>
+                              searcher?.startTextSearch(searchInput.text),
+                          icon: const Icon(Icons.search),
+                        ),
+                        Text(
+                          '${searcher?.currentIndex == null ? 0 : searcher!.currentIndex! + 1}/${searcher?.matches.length ?? 0}',
+                        ),
+                        IconButton(
+                          tooltip: '이전 검색 결과',
+                          onPressed: () {
+                            rememberJump();
+                            searcher?.goToPrevMatch();
+                          },
+                          icon: const Icon(Icons.keyboard_arrow_up),
+                        ),
+                        IconButton(
+                          tooltip: '다음 검색 결과',
+                          onPressed: () {
+                            rememberJump();
+                            searcher?.goToNextMatch();
+                          },
+                          icon: const Icon(Icons.keyboard_arrow_down),
+                        ),
+                        IconButton(
+                          tooltip: '검색 닫기',
+                          onPressed: () => setState(() => searchOpen = false),
+                          icon: const Icon(Icons.close),
                         ),
                       ],
                     ),
                   ),
+                if (error != null)
+                  MaterialBanner(
+                    content: Text(error!),
+                    actions: [
+                      TextButton(
+                        onPressed: () => setState(() => error = null),
+                        child: const Text('닫기'),
+                      ),
+                    ],
+                  ),
+                Expanded(
+                  child: Row(
+                    children: [
+                      if (pdf &&
+                          !focusReading &&
+                          wide &&
+                          panel &&
+                          !(showAI && questionFocus)) ...[
+                        SizedBox(width: 250, child: navigation()),
+                        const VerticalDivider(width: 1),
+                      ],
+                      Expanded(
+                        key: const ValueKey('reader-document'),
+                        child: Offstage(
+                          offstage: wide && showAI && questionFocus,
+                          child: OverflowBox(
+                            minWidth: wide && showAI && questionFocus
+                                ? (MediaQuery.sizeOf(context).width -
+                                          aiWidth -
+                                          8)
+                                      .clamp(320, double.infinity)
+                                : null,
+                            maxWidth: wide && showAI && questionFocus
+                                ? (MediaQuery.sizeOf(context).width -
+                                          aiWidth -
+                                          8)
+                                      .clamp(320, double.infinity)
+                                : null,
+                            child: pdf
+                                ? Column(
+                                    children: [
+                                      if (!focusReading) writingToolbar(),
+                                      Expanded(child: filteredPdf(file, doc)),
+                                    ],
+                                  )
+                                : _FilePreview(
+                                    file: file,
+                                    extension: doc.text('extension'),
+                                    conversionError: doc.text(
+                                      'conversionError',
+                                    ),
+                                    converting: converting,
+                                    onConvert: PdfConversion.supports(doc)
+                                        ? convertDocument
+                                        : null,
+                                  ),
+                          ),
+                        ),
+                      ),
+                      if (wide) ...[
+                        GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onHorizontalDragEnd: (_) => rememberView(),
+                          onHorizontalDragUpdate: questionFocus
+                              ? null
+                              : (drag) => setState(
+                                  () =>
+                                      aiWidth = (aiWidth - drag.delta.dx).clamp(
+                                        320,
+                                        MediaQuery.sizeOf(context).width * .55,
+                                      ),
+                                ),
+                          child: MouseRegion(
+                            cursor: SystemMouseCursors.resizeLeftRight,
+                            child: SizedBox(
+                              width: showAI ? 8 : 0,
+                              child: const VerticalDivider(width: 1),
+                            ),
+                          ),
+                        ),
+                        SizedBox(
+                          key: const ValueKey('reader-question-panel'),
+                          width: !showAI
+                              ? 0
+                              : questionFocus
+                              ? MediaQuery.sizeOf(context).width - 8
+                              : aiWidth.clamp(
+                                  320,
+                                  MediaQuery.sizeOf(context).width * .55,
+                                ),
+                          child: Offstage(
+                            offstage: !showAI,
+                            child: OverflowBox(
+                              minWidth: !showAI ? aiWidth : null,
+                              maxWidth: !showAI ? aiWidth : null,
+                              child: studyPanel(),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          floatingActionButton: focusReading
+              ? FloatingActionButton.small(
+                  tooltip: '도구 다시 보기',
+                  onPressed: () => setState(() => focusReading = false),
+                  child: const Icon(Icons.fullscreen_exit),
                 )
               : null,
         ),
@@ -1268,7 +1907,7 @@ class _FilePreview extends StatelessWidget {
         ),
       );
     }
-    if (['.md', '.txt', '.html', '.csv', '.markdown'].contains(extension)) {
+    if (PdfConversion.textExtensions.contains(extension)) {
       return FutureBuilder<String>(
         future: file.readAsString(),
         builder: (context, snapshot) {
@@ -1278,12 +1917,28 @@ class _FilePreview extends StatelessWidget {
           if (!snapshot.hasData) {
             return const Center(child: CircularProgressIndicator());
           }
-          return extension == '.md' || extension == '.markdown'
+          final preview = extension == '.md' || extension == '.markdown'
               ? Markdown(data: snapshot.data!, selectable: true)
               : SingleChildScrollView(
                   padding: const EdgeInsets.all(24),
                   child: SelectableText(snapshot.data!),
                 );
+          return Column(
+            children: [
+              if (onConvert != null)
+                TextButton.icon(
+                  onPressed: converting ? null : onConvert,
+                  icon: const Icon(Icons.picture_as_pdf_outlined),
+                  label: Text(converting ? 'PDF 변환 중…' : 'PDF로 변환'),
+                ),
+              if (conversionError.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Text(conversionError),
+                ),
+              Expanded(child: preview),
+            ],
+          );
         },
       );
     }
